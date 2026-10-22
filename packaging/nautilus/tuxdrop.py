@@ -21,6 +21,13 @@ def _info(name, label):
     return Nautilus.MenuItem(name=name, label=label, sensitive=False)
 
 
+def _label(alias, name):
+    """Same as the tray: "Name (alias)" for a device named locally."""
+    if not name or name == alias:
+        return alias
+    return f"{name} ({alias})" if alias else name
+
+
 def _ignore_reply(proxy, result):
     try:
         proxy.call_finish(result)
@@ -81,11 +88,13 @@ class TuxDropMenu(GObject.GObject, Nautilus.MenuProvider):
         self._announce(daemon)
         if not peers:
             return [_info("TuxDrop::None", "No device found")]
+        labelled = [
+            (_label(alias, name), fingerprint)
+            for alias, name, _addr, fingerprint, _protocol, _age in peers
+        ]
         items = []
-        for alias, _addr, fingerprint, _protocol, _age in sorted(
-            peers, key=lambda p: p[0].casefold()
-        ):
-            item = Nautilus.MenuItem(name=f"TuxDrop::Send::{fingerprint}", label=alias)
+        for label, fingerprint in sorted(labelled, key=lambda p: p[0].casefold()):
+            item = Nautilus.MenuItem(name=f"TuxDrop::Send::{fingerprint}", label=label)
             item.connect("activate", self._send, daemon, fingerprint, paths)
             items.append(item)
         return items

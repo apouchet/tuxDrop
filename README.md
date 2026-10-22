@@ -20,11 +20,16 @@ sudo install -m755 target/release/tuxdrop target/release/tuxdropd /usr/local/bin
 sudo install -Dm644 packaging/tuxdropd.service /usr/lib/systemd/user/tuxdropd.service
 ```
 
-Then, as each user who wants to receive files:
+The packages enable the daemon for every user (`systemctl --global enable`): it starts at the
+next login. To start it right away, or after a manual install:
 
 ```sh
 systemctl --user enable --now tuxdropd
 ```
+
+To opt out, mask it (a disable would come back at the next package upgrade):
+`systemctl --user mask tuxdropd` for yourself, `sudo systemctl --global mask tuxdropd` for
+everyone.
 
 The packages ship firewall definitions but do not open anything. Port 53317 is used for UDP
 discovery and TCP transfers:
@@ -39,8 +44,13 @@ nothing.
 
 ## Desktop integration
 
-- **Tray icon**: `tuxdropd` shows an icon listing the nearby devices. GNOME needs the
-  AppIndicator extension:
+- **Notifications**: transfers show their progress with a **Cancel** button; received files
+  get **Open folder**; a text message sent from the LocalSend app is shown with **Copy**
+  (needs wl-clipboard, or xclip on X11).
+- **Tray icon**: `tuxdropd` shows an icon listing the nearby devices. Each device's submenu
+  renames it (local name, needs zenity) and trusts it. A request waiting for an answer is shown
+  at the top with Accept / Decline, and **Open received files** opens the download folder.
+  GNOME needs the AppIndicator extension:
   - Ubuntu: preinstalled; if disabled, `gnome-extensions enable ubuntu-appindicators@ubuntu.com`.
   - Fedora: `sudo dnf install gnome-shell-extension-appindicator`, log out and in, then
     `gnome-extensions enable appindicatorsupport@rgcjonas.gmail.com`.
@@ -71,11 +81,12 @@ Full reference for every command, the daemon and its D-Bus API: [docs/commands.m
 
 ```sh
 tuxdrop peers                       # nearby devices
-tuxdrop send iPhone photo.jpg dir/  # alias, fingerprint prefix or IP[:port]
+tuxdrop send iPhone photo.jpg dir/  # local name, alias, fingerprint prefix or IP[:port]
 tuxdrop status                      # pending incoming transfers (daemon)
 tuxdrop accept <id> / reject <id>   # also offered as notification buttons
 tuxdrop recv                        # receive in the foreground, without the daemon
-tuxdrop trust <fingerprint>         # auto-accept this device; see `tuxdrop trusted`
+tuxdrop trust <device>              # auto-accept this device; see `tuxdrop trusted`
+tuxdrop name <device> "Salon"       # your own name for a device
 tuxdrop info                        # own alias and fingerprint
 ```
 

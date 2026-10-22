@@ -78,6 +78,11 @@ pub fn same_fingerprint(a: &str, b: &str) -> bool {
     a.eq_ignore_ascii_case(b)
 }
 
+/// A complete fingerprint: 64 hex digits, any case.
+pub fn is_fingerprint(text: &str) -> bool {
+    text.len() == 64 && text.chars().all(|c| c.is_ascii_hexdigit())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

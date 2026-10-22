@@ -1,9 +1,9 @@
 //! User configuration (`~/.config/tuxdrop/config.toml`) and data paths.
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result};
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 
 use crate::proto::DEFAULT_PORT;
 
@@ -55,9 +55,20 @@ pub fn config_dir() -> PathBuf {
         .join("tuxdrop")
 }
 
-/// Holds the certificate, private key and trusted devices.
+/// Holds the certificate, private key, trusted devices and device names.
 pub fn data_dir() -> PathBuf {
     dirs::data_dir()
         .unwrap_or_else(|| PathBuf::from("."))
         .join("tuxdrop")
+}
+
+/// Replaces `path` atomically, so a concurrent reader never sees a partial file.
+pub(crate) fn save_json<T: Serialize>(path: &Path, value: &T) -> Result<()> {
+    if let Some(dir) = path.parent() {
+        std::fs::create_dir_all(dir)?;
+    }
+    let tmp = path.with_extension("json.tmp");
+    std::fs::write(&tmp, serde_json::to_vec_pretty(value)?)?;
+    std::fs::rename(&tmp, path)?;
+    Ok(())
 }

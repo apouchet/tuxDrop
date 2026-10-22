@@ -26,6 +26,8 @@ use crate::trust::TrustStore;
 
 const SESSION_IDLE_TIMEOUT: Duration = Duration::from_secs(300);
 const REFUSAL_COOLDOWN: Duration = Duration::from_secs(5);
+/// Bounds how often one address can show a message to the user.
+const MESSAGE_COOLDOWN: Duration = Duration::from_secs(2);
 const PROGRESS_STEP: u64 = 1024 * 1024;
 
 #[derive(Clone, Debug)]
@@ -59,6 +61,11 @@ pub enum ReceiveEvent {
     /// Sent by a trusted device: accepted without asking.
     AutoAccepted {
         request: IncomingRequest,
+    },
+    /// A text message (LocalSend "message"): nothing is uploaded or saved.
+    Message {
+        request: IncomingRequest,
+        text: String,
     },
     Progress {
         session_id: String,
@@ -124,6 +131,7 @@ enum Slot {
 #[derive(Default)]
 struct State {
     slot: Slot,
+    /// Addresses refused until the given instant.
     cooldown: HashMap<IpAddr, Instant>,
 }
 
@@ -196,11 +204,17 @@ impl Receiver {
         verified_fingerprint: Option<String>,
         pin: Option<String>,
         req: PrepareUploadRequest,
-    ) -> Result<PrepareUploadResponse, StatusCode> {
+    ) -> Result<Option<PrepareUploadResponse>, StatusCode> {
         self.reserve(addr)?;
         let guard = DecisionGuard { inner: &self.inner };
         match self.decide(addr, verified_fingerprint, pin, req).await {
-            Ok(session) => {
+            Ok(None) => {
+                lock(&self.inner.state)
+                    .cooldown
+                    .insert(addr, Instant::now() + MESSAGE_COOLDOWN);
+                Ok(None)
+            }
+            Ok(Some(session)) => {
                 let response = PrepareUploadResponse {
                     session_id: session.id.clone(),
                     files: session
@@ -211,13 +225,13 @@ impl Receiver {
                 };
                 lock(&self.inner.state).slot = Slot::Active(session);
                 drop(guard);
-                Ok(response)
+                Ok(Some(response))
             }
             Err(refusal) => {
                 if refusal.cooldown {
                     lock(&self.inner.state)
                         .cooldown
-                        .insert(addr, Instant::now());
+                        .insert(addr, Instant::now() + REFUSAL_COOLDOWN);
                 }
                 Err(refusal.status)
             }
@@ -226,7 +240,8 @@ impl Receiver {
 
     fn reserve(&self, addr: IpAddr) -> Result<(), StatusCode> {
         let mut st = lock(&self.inner.state);
-        st.cooldown.retain(|_, t| t.elapsed() < REFUSAL_COOLDOWN);
+        let now = Instant::now();
+        st.cooldown.retain(|_, until| *until > now);
         if st.cooldown.contains_key(&addr) {
             return Err(StatusCode::TOO_MANY_REQUESTS);
         }
@@ -253,7 +268,7 @@ impl Receiver {
         verified_fingerprint: Option<String>,
         pin: Option<String>,
         req: PrepareUploadRequest,
-    ) -> Result<Session, Refusal> {
+    ) -> Result<Option<Session>, Refusal> {
         let settings = &self.inner.settings;
         if let Some(expected) = &settings.pin
             && pin.as_deref() != Some(expected.as_str())
@@ -265,6 +280,22 @@ impl Receiver {
         }
         if req.files.is_empty() {
             return Err(StatusCode::BAD_REQUEST.into());
+        }
+        if let Some(text) = message_text(&req.files) {
+            let request = IncomingRequest {
+                session_id: random_id(),
+                sender: req.info,
+                addr,
+                verified_fingerprint,
+                files: req.files.into_values().collect(),
+                total_size: 0,
+            };
+            let _ = self
+                .inner
+                .events
+                .send(ReceiveEvent::Message { request, text })
+                .await;
+            return Ok(None);
         }
         let mut files = HashMap::new();
         let mut total_size = 0u64;
@@ -341,13 +372,13 @@ impl Receiver {
                 cooldown: true,
             });
         }
-        Ok(Session {
+        Ok(Some(Session {
             id: session_id,
             sender_ip: addr,
             files,
             cancelled: Arc::default(),
             last_activity: Instant::now(),
-        })
+        }))
     }
 
     pub async fn upload<S, E>(
@@ -514,11 +545,31 @@ impl Receiver {
         });
     }
 
+    /// The sender's `cancel` request.
     pub async fn cancel(&self, addr: IpAddr, session_id: &str) -> Result<(), StatusCode> {
+        if self.end_session(session_id, Some(addr)).await {
+            Ok(())
+        } else {
+            Err(StatusCode::FORBIDDEN)
+        }
+    }
+
+    /// Cancels the active session from this side: the file being received is
+    /// deleted and the sender's next request fails. Returns false if
+    /// `session_id` is not active.
+    pub async fn cancel_local(&self, session_id: &str) -> bool {
+        self.end_session(session_id, None).await
+    }
+
+    /// Ends the active session `session_id` as cancelled, if it comes from
+    /// `sender` (any address when `None`).
+    async fn end_session(&self, session_id: &str, sender: Option<IpAddr>) -> bool {
         let event = {
             let mut st = lock(&self.inner.state);
             match &st.slot {
-                Slot::Active(s) if s.id == session_id && s.sender_ip == addr => {
+                Slot::Active(s)
+                    if s.id == session_id && sender.is_none_or(|addr| s.sender_ip == addr) =>
+                {
                     s.cancelled.store(true, Ordering::Relaxed);
                     let event = ReceiveEvent::Finished {
                         session_id: s.id.clone(),
@@ -527,11 +578,23 @@ impl Receiver {
                     st.slot = Slot::Idle;
                     event
                 }
-                _ => return Err(StatusCode::FORBIDDEN),
+                _ => return false,
             }
         };
         let _ = self.inner.events.send(event).await;
-        Ok(())
+        true
+    }
+}
+
+/// LocalSend sends a text message as a single text file whose content is
+/// its `preview`; there is nothing to upload.
+fn message_text(files: &HashMap<String, FileMeta>) -> Option<String> {
+    let mut files = files.values();
+    match (files.next(), files.next()) {
+        (Some(file), None) if file.file_type == "text" || file.file_type.starts_with("text/") => {
+            file.preview.clone()
+        }
+        _ => None,
     }
 }
 

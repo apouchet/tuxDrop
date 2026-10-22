@@ -12,10 +12,15 @@ use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
 use tuxdrop_core::client::{self, SendEvent, SendOutcome, SendRequest};
 use tuxdrop_core::discovery::Peer;
+use tuxdrop_core::identity::is_fingerprint;
+use tuxdrop_core::names::Names;
 use tuxdrop_core::receive::{IncomingRequest, Outcome, ReceiveEvent};
 use tuxdrop_core::{Node, SWEEP_DELAY};
 
 mod daemon;
+
+/// Seconds `trust` and `name` search for a nearby device.
+const LOOKUP_TIMEOUT: u64 = 5;
 
 #[derive(Parser)]
 #[command(
@@ -37,7 +42,7 @@ enum Command {
         #[arg(short, long, default_value_t = 3)]
         timeout: u64,
     },
-    /// Send files or folders to a device (alias, fingerprint prefix or IP[:port]).
+    /// Send files or folders to a device (local name, alias, fingerprint prefix or IP[:port]).
     Send {
         target: String,
         #[arg(required = true)]
@@ -57,16 +62,24 @@ enum Command {
     Accept { id: String },
     /// Decline a pending incoming transfer (tuxdropd).
     Reject { id: String },
-    /// Accept transfers from this device without asking.
+    /// Accept transfers from a device without asking: a complete fingerprint,
+    /// or a device as for `send`.
     Trust {
-        fingerprint: String,
-        #[arg(long, default_value = "")]
-        alias: String,
+        device: String,
+        /// Alias to record (default: the device's own).
+        #[arg(long)]
+        alias: Option<String>,
     },
-    /// Stop trusting a device.
-    Untrust { fingerprint: String },
+    /// Stop trusting a device (fingerprint, local name, alias or fingerprint prefix).
+    Untrust { device: String },
     /// List trusted devices.
     Trusted,
+    /// Give a device a name of your own, shown next to its alias; without
+    /// NAME, remove it.
+    Name {
+        device: String,
+        name: Option<String>,
+    },
 }
 
 #[tokio::main]
@@ -104,28 +117,73 @@ async fn main() -> Result<()> {
         Command::Status => daemon::status().await?,
         Command::Accept { id } => daemon::decide(&id, true).await?,
         Command::Reject { id } => daemon::decide(&id, false).await?,
-        Command::Trust { fingerprint, alias } => {
+        Command::Trust { device, alias } => {
+            let names = Node::name_store().load();
+            let (fingerprint, own_alias) = resolve_device(&device, &names).await?;
+            let alias = alias.unwrap_or(own_alias);
             Node::trust_store().add(&fingerprint, &alias)?;
-            println!("trusted {fingerprint}");
+            println!(
+                "trusted {} ({fingerprint})",
+                names.label(&alias, &fingerprint)
+            );
         }
-        Command::Untrust { fingerprint } => {
-            if !Node::trust_store().remove(&fingerprint)? {
-                bail!("{fingerprint} was not trusted");
-            }
+        Command::Untrust { device } => {
+            let names = Node::name_store().load();
+            let Some(trusted) = Node::trust_store().find(&device, &names)? else {
+                bail!("{device} is not trusted (see `tuxdrop trusted`)");
+            };
+            Node::trust_store().remove(&trusted.fingerprint)?;
+            println!(
+                "no longer trusted: {} ({})",
+                names.label(&trusted.alias, &trusted.fingerprint),
+                trusted.fingerprint
+            );
         }
         Command::Trusted => {
+            let names = Node::name_store().load();
             for d in Node::trust_store().list()? {
-                println!("{}  {}", d.fingerprint, d.alias);
+                println!(
+                    "{}  {}",
+                    d.fingerprint,
+                    names.label(&d.alias, &d.fingerprint)
+                );
+            }
+        }
+        Command::Name { device, name } => {
+            let names = Node::name_store().load();
+            let (fingerprint, alias) = resolve_device(&device, &names).await?;
+            match Node::name_store().set(&fingerprint, name.as_deref().unwrap_or(""))? {
+                Some(name) => println!("{fingerprint} is now named {name:?}"),
+                None if alias.is_empty() => println!("{fingerprint} has no name any more"),
+                None => println!("{fingerprint} is shown as {alias:?} again"),
             }
         }
     }
     Ok(())
 }
 
-fn describe(peer: &Peer) -> String {
+/// Fingerprint and alias of `target`: a trusted device, a complete
+/// fingerprint, or a nearby device found as for `send`.
+async fn resolve_device(target: &str, names: &Names) -> Result<(String, String)> {
+    // Trust entries recorded before fingerprints were checked may hold
+    // anything; they can only be removed.
+    if let Some(d) = Node::trust_store()
+        .find(target, names)?
+        .filter(|d| is_fingerprint(&d.fingerprint))
+    {
+        return Ok((d.fingerprint, d.alias));
+    }
+    if is_fingerprint(target) {
+        return Ok((target.to_ascii_uppercase(), String::new()));
+    }
+    let peer = find_peer(&Node::load()?, target, LOOKUP_TIMEOUT).await?;
+    Ok((peer.info.fingerprint, peer.info.alias))
+}
+
+fn describe(peer: &Peer, names: &Names) -> String {
     format!(
-        "{:<24} {:<40} {}",
-        peer.info.alias,
+        "{:<32} {:<40} {}",
+        names.label(&peer.info.alias, &peer.info.fingerprint),
         SocketAddr::new(peer.addr, peer.port),
         &peer.info.fingerprint[..peer.info.fingerprint.len().min(16)]
     )
@@ -140,8 +198,9 @@ async fn peers(timeout: u64) -> Result<()> {
     if found.is_empty() {
         eprintln!("no device found");
     }
+    let names = Node::name_store().load();
     for peer in &found {
-        println!("{}", describe(peer));
+        println!("{}", describe(peer, &names));
     }
     Ok(())
 }
@@ -152,6 +211,7 @@ async fn peers(timeout: u64) -> Result<()> {
 async fn discover(node: &Node, timeout: Duration, target: Option<&str>) -> Result<Vec<Peer>> {
     let (tx, mut rx) = mpsc::channel(32);
     node.start_discovery(tx)?;
+    let names = Node::name_store().load();
     let mut found: HashMap<String, Peer> = HashMap::new();
     let deadline = tokio::time::sleep(timeout);
     let sweep = tokio::time::sleep(SWEEP_DELAY);
@@ -160,7 +220,7 @@ async fn discover(node: &Node, timeout: Duration, target: Option<&str>) -> Resul
     loop {
         tokio::select! {
             Some(peer) = rx.recv() => {
-                let done = target.is_some_and(|t| peer.matches(t));
+                let done = target.is_some_and(|t| peer.matches(t, &names));
                 found.entry(peer.info.fingerprint.to_ascii_uppercase()).or_insert(peer);
                 if done {
                     break;
@@ -169,7 +229,7 @@ async fn discover(node: &Node, timeout: Duration, target: Option<&str>) -> Resul
             () = &mut sweep, if !swept => {
                 swept = true;
                 let satisfied = match target {
-                    Some(t) => found.values().any(|p| p.matches(t)),
+                    Some(t) => found.values().any(|p| p.matches(t, &names)),
                     None => !found.is_empty(),
                 };
                 if !satisfied {
@@ -189,10 +249,13 @@ async fn find_peer(node: &Node, target: &str, timeout: u64) -> Result<Peer> {
     let timeout = Duration::from_secs(timeout);
     let found = match daemon::running().await {
         Some(d) => daemon::find(&d, target, timeout).await?,
-        None => discover(node, timeout, Some(target))
-            .await?
-            .into_iter()
-            .find(|p| p.matches(target)),
+        None => {
+            let names = Node::name_store().load();
+            discover(node, timeout, Some(target))
+                .await?
+                .into_iter()
+                .find(|p| p.matches(target, &names))
+        }
     };
     found.with_context(|| format!("device {target:?} not found (try `tuxdrop peers`)"))
 }
@@ -206,7 +269,9 @@ async fn send(target: &str, paths: &[PathBuf], pin: Option<&str>, timeout: u64) 
         "sending {} file(s), {} to {}; waiting for approval…",
         files.len(),
         human_size(total),
-        peer.info.alias
+        Node::name_store()
+            .load()
+            .label(&peer.info.alias, &peer.info.fingerprint)
     );
 
     let last_percent = Arc::new(Mutex::new((String::new(), u64::MAX)));
@@ -288,7 +353,7 @@ fn print_request(request: &IncomingRequest) {
 async fn recv() -> Result<()> {
     let node = Node::load()?;
     let (peers_tx, mut peers) = mpsc::channel(32);
-    let mut events = node.start_receiver(peers_tx.clone())?;
+    let (_receiver, mut events) = node.start_receiver(peers_tx.clone())?;
     node.start_discovery(peers_tx)?;
     tokio::spawn(async move { while peers.recv().await.is_some() {} });
     eprintln!(
@@ -329,6 +394,10 @@ async fn recv() -> Result<()> {
                     request.files.len(),
                     request.sender.alias
                 );
+            }
+            ReceiveEvent::Message { request, text } => {
+                eprintln!("\nmessage from {}:", request.sender.alias);
+                println!("{text}");
             }
             ReceiveEvent::Progress {
                 file_name,

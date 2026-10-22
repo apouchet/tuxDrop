@@ -274,6 +274,7 @@ async fn upload_file(
     match resp.status() {
         StatusCode::OK | StatusCode::NO_CONTENT => Ok(()),
         StatusCode::UNPROCESSABLE_ENTITY => bail!("{}: checksum mismatch", file.meta.file_name),
+        StatusCode::CONFLICT => bail!("transfer cancelled by the receiver"),
         s => bail!("{}: receiver answered {s}", file.meta.file_name),
     }
 }

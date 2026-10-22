@@ -17,6 +17,7 @@ use tokio::sync::mpsc;
 
 use crate::client;
 use crate::identity::{Identity, same_fingerprint};
+use crate::names::Names;
 use crate::proto::{API_PREFIX, Announcement, DEFAULT_PORT, DeviceInfo, MULTICAST_ADDR, Protocol};
 
 #[derive(Clone, Debug)]
@@ -69,17 +70,26 @@ impl Peer {
         )
     }
 
-    /// `target` is an alias (case-insensitive) or a fingerprint prefix of at
-    /// least 6 characters.
-    pub fn matches(&self, target: &str) -> bool {
-        self.info.alias.eq_ignore_ascii_case(target)
-            || (target.len() >= 6
-                && self
-                    .info
-                    .fingerprint
-                    .get(..target.len())
-                    .is_some_and(|p| p.eq_ignore_ascii_case(target)))
+    /// See [`designates`].
+    pub fn matches(&self, target: &str, names: &Names) -> bool {
+        designates(
+            target,
+            &self.info.alias,
+            &self.info.fingerprint,
+            names.get(&self.info.fingerprint),
+        )
     }
+}
+
+/// Whether `target` designates a device: its local name or its alias
+/// (case-insensitive), or a fingerprint prefix of at least 6 characters.
+pub fn designates(target: &str, alias: &str, fingerprint: &str, name: Option<&str>) -> bool {
+    name.is_some_and(|n| n.to_lowercase() == target.to_lowercase())
+        || (!alias.is_empty() && alias.eq_ignore_ascii_case(target))
+        || (target.len() >= 6
+            && fingerprint
+                .get(..target.len())
+                .is_some_and(|p| p.eq_ignore_ascii_case(target)))
 }
 
 fn ipv4_interfaces() -> Vec<Ipv4Addr> {
@@ -323,6 +333,21 @@ mod tests {
             peer.api_url("info"),
             "https://192.168.1.16:53317/api/localsend/v2/info"
         );
-        assert!(peer.matches("FEDORA"));
+        assert!(peer.matches("FEDORA", &Names::default()));
+    }
+
+    #[test]
+    fn designates_by_name_alias_or_prefix() {
+        let fp = "C41ADA0123";
+        assert!(designates(
+            "Bureau d'Élise",
+            "fedora",
+            fp,
+            Some("bureau d'élise")
+        ));
+        assert!(designates("FEDORA", "fedora", fp, Some("Bureau")));
+        assert!(designates("c41ada", "fedora", fp, None));
+        assert!(!designates("c41ad", "fedora", fp, None));
+        assert!(!designates("", "", fp, None));
     }
 }

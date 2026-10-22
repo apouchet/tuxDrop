@@ -7,6 +7,7 @@ use std::net::SocketAddr;
 use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result};
+use tuxdrop_core::Node;
 use tuxdrop_core::discovery::Peer;
 use tuxdrop_core::proto::Protocol;
 
@@ -18,7 +19,8 @@ use crate::{describe, human_size};
     default_path = "/org/tuxdrop/Daemon"
 )]
 pub trait Daemon {
-    fn list_peers(&self) -> zbus::Result<Vec<(String, String, String, String, u32)>>;
+    #[allow(clippy::type_complexity)]
+    fn list_peers(&self) -> zbus::Result<Vec<(String, String, String, String, String, u32)>>;
     fn announce(&self) -> zbus::Result<()>;
     fn list_pending(&self) -> zbus::Result<Vec<(String, String, bool, u32, u64)>>;
     fn accept(&self, id: &str) -> zbus::Result<()>;
@@ -48,13 +50,14 @@ async fn require() -> Result<DaemonProxy<'static>> {
         .context("tuxdropd is not running (systemctl --user start tuxdropd)")
 }
 
-/// Devices known to the daemon, with seconds since each was last seen.
+/// Devices known to the daemon, with seconds since each was last seen. Their
+/// local names come from the same file the daemon reads ([`Node::name_store`]).
 async fn known_peers(daemon: &DaemonProxy<'_>) -> Result<Vec<(Peer, u32)>> {
     Ok(daemon
         .list_peers()
         .await?
         .into_iter()
-        .filter_map(|(alias, addr, fingerprint, protocol, age)| {
+        .filter_map(|(alias, _name, addr, fingerprint, protocol, age)| {
             let addr: SocketAddr = addr.parse().ok()?;
             let protocol = Protocol::from_scheme(&protocol)?;
             Some((Peer::known(alias, fingerprint, addr, protocol), age))
@@ -82,12 +85,13 @@ pub async fn find(
     target: &str,
     timeout: Duration,
 ) -> Result<Option<Peer>> {
+    let names = Node::name_store().load();
     let lookup = async || -> Result<Option<Peer>> {
         Ok(known_peers(daemon)
             .await?
             .into_iter()
             .map(|(peer, _)| peer)
-            .find(|peer| peer.matches(target)))
+            .find(|peer| peer.matches(target, &names)))
     };
     if let Some(peer) = lookup().await? {
         return Ok(Some(peer));
@@ -117,8 +121,9 @@ pub async fn status() -> Result<()> {
         );
     }
     println!("devices seen in the last 5 minutes:");
+    let names = Node::name_store().load();
     for (peer, age) in known_peers(&daemon).await? {
-        println!("  {}  {age}s ago", describe(&peer));
+        println!("  {}  {age}s ago", describe(&peer, &names));
     }
     Ok(())
 }

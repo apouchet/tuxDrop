@@ -146,7 +146,9 @@ async fn prepare_upload(
         .prepare_upload(conn.addr, conn.client_fingerprint, pin.pin, req)
         .await
     {
-        Ok(resp) => Json(resp).into_response(),
+        Ok(Some(resp)) => Json(resp).into_response(),
+        // A text message, already delivered: nothing to upload.
+        Ok(None) => StatusCode::NO_CONTENT.into_response(),
         Err(status) => status.into_response(),
     }
 }

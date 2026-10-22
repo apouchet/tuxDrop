@@ -6,10 +6,13 @@
 use std::fs;
 use std::path::PathBuf;
 
-use anyhow::{Context, Result};
+use anyhow::{Context, Result, bail};
 use serde::{Deserialize, Serialize};
 
+use crate::config::save_json;
+use crate::discovery::designates;
 use crate::identity::same_fingerprint;
+use crate::names::Names;
 
 #[derive(Serialize, Deserialize, Clone, Debug)]
 pub struct TrustedDevice {
@@ -50,6 +53,27 @@ impl TrustStore {
         }
     }
 
+    /// The trusted device `target` designates: its stored fingerprint as
+    /// written, or as for nearby devices ([`designates`]). Errors when
+    /// several match.
+    pub fn find(&self, target: &str, names: &Names) -> Result<Option<TrustedDevice>> {
+        let devices = self.list()?;
+        if let Some(d) = devices
+            .iter()
+            .find(|d| same_fingerprint(&d.fingerprint, target))
+        {
+            return Ok(Some(d.clone()));
+        }
+        let mut found = devices
+            .into_iter()
+            .filter(|d| designates(target, &d.alias, &d.fingerprint, names.get(&d.fingerprint)));
+        let first = found.next();
+        if found.next().is_some() {
+            bail!("{target:?} matches several trusted devices, give more of the fingerprint");
+        }
+        Ok(first)
+    }
+
     pub fn add(&self, fingerprint: &str, alias: &str) -> Result<()> {
         let mut devices = self.list()?;
         devices.retain(|d| !same_fingerprint(&d.fingerprint, fingerprint));
@@ -57,7 +81,7 @@ impl TrustStore {
             fingerprint: fingerprint.to_ascii_uppercase(),
             alias: alias.to_owned(),
         });
-        self.save(&devices)
+        save_json(&self.path, &devices)
     }
 
     /// Returns whether an entry was removed.
@@ -67,19 +91,9 @@ impl TrustStore {
         devices.retain(|d| !same_fingerprint(&d.fingerprint, fingerprint));
         let removed = devices.len() != before;
         if removed {
-            self.save(&devices)?;
+            save_json(&self.path, &devices)?;
         }
         Ok(removed)
-    }
-
-    fn save(&self, devices: &[TrustedDevice]) -> Result<()> {
-        if let Some(dir) = self.path.parent() {
-            fs::create_dir_all(dir)?;
-        }
-        let tmp = self.path.with_extension("json.tmp");
-        fs::write(&tmp, serde_json::to_vec_pretty(devices)?)?;
-        fs::rename(&tmp, &self.path)?;
-        Ok(())
     }
 }
 
@@ -99,5 +113,27 @@ mod tests {
         assert!(store.remove("ab").unwrap());
         assert!(!store.remove("ab").unwrap());
         assert!(!store.is_trusted("AB"));
+    }
+
+    #[test]
+    fn find_by_name_alias_prefix_or_stored_text() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = TrustStore::new(dir.path().join("trusted.json"));
+        store.add("C41ADA01", "fedora").unwrap();
+        store.add("C41ADB02", "laptop").unwrap();
+        store.add("APOUCHET", "").unwrap();
+        let names = crate::names::NameStore::new(dir.path().join("names.json"));
+        names.set("c41ada01", "Bureau").unwrap();
+        let names = names.load();
+
+        let find = |t| store.find(t, &names).unwrap().map(|d| d.fingerprint);
+        assert_eq!(find("bureau").as_deref(), Some("C41ADA01"));
+        assert_eq!(find("LAPTOP").as_deref(), Some("C41ADB02"));
+        assert_eq!(find("c41ada").as_deref(), Some("C41ADA01"));
+        assert_eq!(find("apouchet").as_deref(), Some("APOUCHET"));
+        assert_eq!(find("unknown"), None);
+        assert!(store.find("C41AD", &names).unwrap().is_none());
+        store.add("C41ADA03", "other").unwrap();
+        assert!(store.find("c41ada", &names).is_err());
     }
 }

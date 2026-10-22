@@ -5,6 +5,7 @@ pub mod client;
 pub mod config;
 pub mod discovery;
 pub mod identity;
+pub mod names;
 pub mod proto;
 pub mod receive;
 pub mod server;
@@ -21,6 +22,7 @@ use tokio::sync::mpsc;
 use crate::config::{Config, data_dir};
 use crate::discovery::{Discovery, Peer};
 use crate::identity::Identity;
+use crate::names::NameStore;
 use crate::proto::{DeviceInfo, DeviceType, PROTOCOL_VERSION, Protocol};
 use crate::receive::{ReceiveEvent, Receiver, ReceiverSettings};
 use crate::trust::TrustStore;
@@ -75,6 +77,10 @@ impl Node {
         TrustStore::new(data_dir().join("trusted.json"))
     }
 
+    pub fn name_store() -> NameStore {
+        NameStore::new(data_dir().join("names.json"))
+    }
+
     /// Listens for announcements and multicasts our own presence once.
     pub fn start_discovery(&self, peers: mpsc::Sender<Peer>) -> Result<()> {
         let discovery = Discovery::bind(self.config.port, self.identity.clone(), self.me.clone())
@@ -98,11 +104,11 @@ impl Node {
     }
 
     /// Serves the upload API on every interface; transfer events arrive on
-    /// the returned channel.
+    /// the returned channel, and the returned [`Receiver`] can cancel them.
     pub fn start_receiver(
         &self,
         peers: mpsc::Sender<Peer>,
-    ) -> Result<mpsc::Receiver<ReceiveEvent>> {
+    ) -> Result<(Receiver, mpsc::Receiver<ReceiveEvent>)> {
         let listener = server::bind(SocketAddr::from((Ipv6Addr::UNSPECIFIED, self.config.port)))
             .with_context(|| {
                 format!(
@@ -122,11 +128,12 @@ impl Node {
         );
         let identity = self.identity.clone();
         let me = self.me.clone();
+        let served = receiver.clone();
         tokio::spawn(async move {
-            if let Err(e) = server::serve(listener, &identity, me, receiver, peers).await {
+            if let Err(e) = server::serve(listener, &identity, me, served, peers).await {
                 tracing::error!("server stopped: {e:#}");
             }
         });
-        Ok(events)
+        Ok((receiver, events))
     }
 }

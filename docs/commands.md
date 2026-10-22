@@ -15,8 +15,9 @@ the same network.
 - [How a transfer works](#how-a-transfer-works)
 - [tuxdrop](#tuxdrop): [info](#tuxdrop-info) · [peers](#tuxdrop-peers) · [send](#tuxdrop-send) ·
   [recv](#tuxdrop-recv) · [status](#tuxdrop-status) · [accept / reject](#tuxdrop-accept--tuxdrop-reject) ·
-  [trust / untrust / trusted](#tuxdrop-trust--untrust--trusted)
-- [tuxdropd](#tuxdropd): [file manager menu](#file-manager-menu) · [D-Bus API](#d-bus-api)
+  [trust / untrust / trusted](#tuxdrop-trust--untrust--trusted) · [name](#tuxdrop-name)
+- [tuxdropd](#tuxdropd): [tray icon](#tray-icon) · [file manager menu](#file-manager-menu) ·
+  [D-Bus API](#d-bus-api)
 - [Files and configuration](#files-and-configuration)
 - [Troubleshooting](#troubleshooting)
 
@@ -91,7 +92,8 @@ tuxdrop peers [-t, --timeout <SECONDS>]     # default: 3
 ```
 
 Lists the devices that answer on the local network, each once, as alias, address and the first
-16 characters of its fingerprint.
+16 characters of its fingerprint. A device you named with [`tuxdrop name`](#tuxdrop-name) shows
+as `Name (alias)`.
 
 - **When `tuxdropd` runs**, the daemon announces and collects the answers, because other
   devices answer on its port. `peers` waits `--timeout` seconds, then shows the devices that
@@ -120,7 +122,7 @@ Sends one or more files or folders to one device.
 
 | Form | Example | How it is found |
 |---|---|---|
-| alias (not case-sensitive) | `alpha`, `"iPhone de Marie"` | the daemon's list of devices; if absent, discovery for up to `--timeout` seconds (default 5) |
+| local name or alias (not case-sensitive) | `alpha`, `"iPhone de Marie"` | the daemon's list of devices; if absent, discovery for up to `--timeout` seconds (default 5) |
 | fingerprint prefix, 6+ characters | `9F2C41` | discovery, as above |
 | IP address | `192.168.1.34` | contacted directly on port 53317 |
 | IP and port | `192.168.1.34:53318`, `[2001:db8::34]:53317` | contacted directly |
@@ -158,6 +160,7 @@ transfer complete
 |---|---|
 | `device "x" not found (try tuxdrop peers)` | nobody with that alias/prefix answered in time |
 | `transfer declined by the receiver` | refused, or no answer within 60 s |
+| `transfer cancelled by the receiver` | the receiver pressed Cancel during the transfer |
 | `receiver requires a PIN, or the PIN is wrong` | use `--pin`, or check it |
 | `receiver is busy with another transfer` | retry when the current transfer ends |
 | `too many requests, retry in a few seconds` | 5 s cooldown after a refusal or wrong PIN |
@@ -235,16 +238,26 @@ An id that is not pending (already answered, expired, or mistyped) gives
 ### `tuxdrop trust` / `untrust` / `trusted`
 
 ```
-tuxdrop trust <FINGERPRINT> [--alias <NAME>]
-tuxdrop untrust <FINGERPRINT>
+tuxdrop trust <DEVICE> [--alias <ALIAS>]
+tuxdrop untrust <DEVICE>
 tuxdrop trusted
 ```
 
 Manages the devices whose transfers are accepted without asking.
-- **`trust`** adds a device. The fingerprint is the full 64-character value shown by
-  `tuxdrop info` on that device, not case-sensitive. `--alias` is only a label for `trusted`.
-- **`untrust`** removes it, and fails if it was not trusted.
+- **`trust`** adds a device. `DEVICE` is either the full 64-character fingerprint shown by
+  `tuxdrop info` on that device (not case-sensitive), or a nearby device given as for
+  [`tuxdrop send`](#tuxdrop-send): local name, alias, fingerprint prefix or address. Anything
+  else is an error. The device's alias is recorded with it; `--alias` replaces it.
+- **`untrust`** removes a trusted device, given by fingerprint, local name, alias or fingerprint
+  prefix (6+ characters). It fails if no trusted device matches, or if several do.
 - **`trusted`** lists the trusted devices.
+
+```
+$ tuxdrop trust bravo
+trusted bravo (52A8984B9E5EB8A2F144A6907DC4284D1F9FE6A7D9B9FF53C02C1D07BA68F24D)
+```
+
+The tray icon has a **Trusted** checkbox for each nearby device that does the same.
 
 The list lives in `~/.local/share/tuxdrop/trusted.json`. It is read at each request, so changes
 apply immediately, including to a running daemon.
@@ -254,6 +267,31 @@ always asks, even if its fingerprint is in the list.
 
 You can also trust a device from a request itself: the **Always accept from this device** button
 of the notification, or answer `a` in `tuxdrop recv`.
+
+### `tuxdrop name`
+
+```
+tuxdrop name <DEVICE> [NAME]
+```
+
+Gives a device a name of your own, for devices whose alias is unclear (`DESKTOP-4F2K`,
+`localhost`). The name stays on this machine; the device keeps announcing its own alias.
+- **`DEVICE`**: as for `trust`. A trusted device can be named even when it is not around.
+- **Without `NAME`**, the name is removed and the alias is shown again.
+
+The name is then shown as `Name (alias)` by `peers`, `status`, `trusted`, the tray icon and the
+Files menu, and can be used as a target by `send`, `trust` and `untrust`. Incoming-transfer
+notifications use it only for verified senders, because anyone can claim a fingerprint.
+Control characters are removed and names are cut at 64 characters.
+
+```
+$ tuxdrop name bravo "PC du salon"
+52A8984B9E5EB8A2F144A6907DC4284D1F9FE6A7D9B9FF53C02C1D07BA68F24D is now named "PC du salon"
+$ tuxdrop send "pc du salon" photo.jpg
+```
+
+Names live in `~/.local/share/tuxdrop/names.json`, read at each use. The tray icon's
+**Rename…** entry does the same.
 
 ---
 
@@ -266,7 +304,7 @@ tuxdropd
 The daemon has no options. It normally runs as a systemd user service:
 
 ```sh
-systemctl --user enable --now tuxdropd   # start now and at each login
+systemctl --user enable --now tuxdropd   # start now and at each login (packages enable it for everyone)
 systemctl --user restart tuxdropd        # after editing config.toml
 systemctl --user disable --now tuxdropd  # stop receiving
 journalctl --user -u tuxdropd -f         # logs
@@ -284,25 +322,56 @@ e.g. `systemctl --user edit tuxdropd` and add `Environment=RUST_LOG=debug`.
 3. Registers `org.tuxdrop.Daemon` on the D-Bus session bus. Only one daemon can run per user.
    With several users logged in at once, only the first one gets the port.
 4. For each incoming request:
-   - **Trusted device:** a "Receiving from …" notification, and the transfer starts.
+   - **Trusted device:** the transfer starts at once.
    - **Any other device:** a persistent notification listing the first files, the total size,
      and "Sender identity not verified" when it applies. Buttons: **Accept**, **Decline**, and
-     **Always accept from this device** (verified senders only).
+     **Always accept from this device** (verified senders only). The same choices are in the
+     [tray menu](#tray-icon).
    - **No answer within 60 seconds:** declined, and the notification is closed.
-5. When a transfer ends, a notification says "Files received" (with the folder), "Transfer
-   cancelled" or "Transfer failed" (with the reason).
-6. For a transfer started through D-Bus `Send` (the Files menu), a notification says
-   "Sending to …", then "Sent to …" or "Sending to … failed" with the reason. An error before
-   the transfer starts (device gone, unreadable file) gives "Sending failed".
-7. Shows a tray icon. Clicking it lists the devices seen in the last 5 minutes and asks nearby
-   devices to answer; new ones appear in the open menu. **Refresh** asks again. On GNOME the
-   icon needs the AppIndicator extension (see the README); without it the daemon logs
-   `no system tray` and the icon appears as soon as the extension is enabled.
+5. During a transfer, in either direction, a notification "Receiving from …" or "Sending to …"
+   shows the percentage and the current file, refreshed every 5 %, at most once a second
+   (servers that support it also draw a bar). Its **Cancel** button stops the transfer: the
+   file being received is deleted, files already completed stay.
+6. When a transfer ends, the same notification turns into:
+   - **Received:** "Files received" with the folder, and an **Open folder** button that shows
+     the received files (or the top folder of a folder) selected in the file manager.
+   - **Sent:** "Sent to …".
+   - **Otherwise:** "Transfer cancelled" (by you or by the sender), "Transfer failed" or
+     "Sending to … failed" with the reason. An error before an outgoing transfer starts
+     (device gone, unreadable file) gives "Sending failed".
+7. **Text messages** sent from the LocalSend app (its "Message" option) are shown as "Message
+   from …" with a **Copy** button; nothing is saved. Copy uses `wl-copy` (package
+   wl-clipboard) on Wayland, `xclip` on X11. One address can show at most one message every
+   2 seconds.
+8. Shows a [tray icon](#tray-icon) listing the nearby devices.
+
+### Tray icon
+
+Clicking the icon lists the devices seen in the last 5 minutes and asks nearby devices to
+answer; new ones appear in the open menu. **Refresh** asks again. **Open received files**
+opens the download folder.
+
+While a request waits for your answer, the icon asks for attention and the menu starts with
+"… wants to send N file(s)" followed by **Accept**, **Decline** and, for verified senders,
+**Always accept from this device**, as in the notification.
+
+Each device is shown as its alias, or `Name (alias)` once named, followed by `· trusted` when
+it is trusted. Its submenu has:
+- **Fingerprint …**: the first 16 characters, to compare with `tuxdrop info` on the device.
+- **Rename…**: opens a dialog (zenity) to give it a [local name](#tuxdrop-name). Leaving the
+  field empty, or typing its alias, removes the name. Without zenity, a notification says so.
+- **Trusted (accept without asking)**: checkbox, same as `tuxdrop trust` / `untrust`. It has no
+  effect on LocalSend apps, which cannot prove their identity and are always asked.
+
+Names and trust changed with the CLI show up the next time the menu is opened.
+
+On GNOME the icon needs the AppIndicator extension (see the README); without it the daemon logs
+`no system tray` and the icon appears as soon as the extension is enabled.
 
 ### File manager menu
 
 In Files (Nautilus), right-click files or folders, then **tuxDrop**: the submenu lists the devices
-known to the daemon. Clicking one calls `Send` with the device fingerprint and the selected
+known to the daemon, with their local name if any. Clicking one calls `Send` with the device fingerprint and the selected
 paths. Opening the menu also calls `Announce` (at most every 5 seconds), so a device that was
 missing appears when the menu is opened again.
 
@@ -320,12 +389,13 @@ status/accept/reject` use it, and so can scripts or a future graphical interface
 
 | Member | Signature | Description |
 |---|---|---|
-| `ListPeers()` | → `a(ssssu)` | devices seen in the last 5 minutes: alias, address, fingerprint, `https`/`http`, seconds since last seen |
+| `ListPeers()` | → `a(sssssu)` | devices seen in the last 5 minutes: alias, local name (empty if none), address, fingerprint, `https`/`http`, seconds since last seen |
 | `Announce()` | → | ask nearby devices to answer (with the unicast fallback); they appear in `ListPeers` within ~2 s |
 | `ListPending()` | → `a(ssbut)` | pending requests: id, alias, verified, file count, total bytes |
 | `Accept(id)` | `s` → | accept a pending request |
 | `Reject(id)` | `s` → | decline a pending request |
 | `Send(target, paths)` | `sas` → `s` | start sending in the background; returns a transfer id |
+| `Cancel(id)` | `s` → | cancel a transfer in progress: incoming (request id) or outgoing (id returned by `Send`) |
 | signal `IncomingRequest` | `ssbut` | id, alias, verified, file count, total bytes |
 | signal `Progress` | `sstt` | id, file name, bytes done, file size |
 | signal `TransferFinished` | `ss` | id, `completed` / `cancelled` / `failed: <reason>` |
@@ -334,8 +404,7 @@ status/accept/reject` use it, and so can scripts or a future graphical interface
 (id returned by `Send`).
 
 For `Send`, `target` takes the same forms as [`tuxdrop send`](#tuxdrop-send). Use absolute paths,
-because the daemon does not run in your current directory. It cannot send with a PIN, and cannot
-cancel a transfer once started.
+because the daemon does not run in your current directory. It cannot send with a PIN.
 
 Examples with `busctl`:
 
@@ -355,6 +424,7 @@ busctl --user monitor org.tuxdrop.Daemon      # watch the signals
 | `~/.config/tuxdrop/config.toml` | settings (optional) |
 | `~/.local/share/tuxdrop/cert.pem`, `key.pem` | device identity; the key is private (mode 0600). Deleting them creates a new fingerprint, and devices that trusted you must trust you again. |
 | `~/.local/share/tuxdrop/trusted.json` | trusted devices |
+| `~/.local/share/tuxdrop/names.json` | names you gave to devices (`tuxdrop name`, tray **Rename…**) |
 | `~/Downloads/tuxDrop/` | default download folder (follows `XDG_DOWNLOAD_DIR`) |
 | `/usr/lib/systemd/user/tuxdropd.service` | user service (packages) |
 | `/usr/share/nautilus-python/extensions/tuxdrop.py` | Files right-click menu (packages) |

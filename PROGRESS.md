@@ -12,7 +12,7 @@ Plan : `~/.claude/plans/j-aimerais-cree-un-programme-purring-acorn.md`
 - [x] `client.rs` : envoi fichiers et dossiers, vérif. fingerprint, cancel
 - [x] CLI : `info`, `peers`, `send`, `recv`, `trust`, `untrust`, `trusted`
 - [x] Test d'intégration loopback (10 cas) + essai réel 2 instances sur ce PC
-- [ ] Interop manuelle avec l'app LocalSend officielle (iPhone / Android / Flatpak) — **à faire par toi**
+- [x] Interop manuelle avec l'app LocalSend officielle — validée par toi le 2026-10-22
 
 ## M2 — Démon et intégration bureau
 - [x] `tuxdropd` : serveur + découverte permanente
@@ -32,7 +32,14 @@ Plan : `~/.claude/plans/j-aimerais-cree-un-programme-purring-acorn.md`
 - [x] Repli unicast : balayage /24 unique si personne ne répond en 1,5 s ; réponse UDP aussi en unicast
 - [x] Logs debug découverte (annonce reçue, register reçu, réponse envoyée, balayage)
 - [x] Validé PC1 (filaire) ↔ PC2 (Wi-Fi, power save) : peers 5/5 et 8/8 en autonome, envoi dans les deux sens
-- [ ] `tuxdrop trust` : valider l'empreinte (accepte aujourd'hui un alias ou un préfixe sans effet)
+- [x] `tuxdrop trust` : empreinte complète ou appareil résolu (nom, alias, préfixe, IP), sinon erreur ; `untrust` par nom/alias/préfixe
+
+## Noms locaux et confiance depuis l'icône
+- [x] `names.json` (`NameStore`), nom jamais envoyé ; `Name (alias)` partout ; `send`/`trust`/`untrust` acceptent le nom
+- [x] Icône : sous-menu par appareil (empreinte, « Rename… » via zenity, case « Trusted »), `· trusted` à côté du nom
+- [x] Notifications : nom local seulement si l'expéditeur est vérifié
+- [x] `ListPeers` → `a(sssssu)` (nom local), CLI et Nautilus à jour ; `tuxdrop name` ; zenity en Recommends
+- [ ] Validation visuelle du sous-menu et de la boîte zenity sur ton bureau — **à faire par toi**
 
 ## Intégration bureau (icône + clic droit)
 - [x] Icône de barre (StatusNotifierItem, `ksni`) dans `tuxdropd` : appareils proches, « Refresh »
@@ -45,9 +52,20 @@ Plan : `~/.claude/plans/j-aimerais-cree-un-programme-purring-acorn.md`
 
 ## M3 — BLE + Wi-Fi Direct (après feu vert)
 ## M4 — UI GTK4 + Nautilus (après feu vert)
+## Améliorations bureau (lot 2026-10-22 : 1, 2, 3, 4, 6, 8, 9)
+- [x] 1. Progression dans la notification (envoi et réception, tous les 5 %, ≤ 1/s, hint `value`)
+- [x] 2. Bouton « Cancel » (envoi : jeton d'annulation ; réception : `Receiver::cancel_local`) + D-Bus `Cancel(id)`
+- [x] 3. « Open folder » sur « Files received » (`FileManager1.ShowItems`, éléments de premier niveau)
+- [x] 4. Demande en attente dans l'icône (Accept / Decline / Always, icône en NeedsAttention)
+- [x] 6. « Open received files » dans l'icône (`FileManager1.ShowFolders`)
+- [x] 8. Paquets : `systemctl --global enable` au postinst, `disable` à la suppression ; opt-out par `mask`
+- [x] 9. Messages texte LocalSend : notification « Message from … » + « Copy » (wl-copy / xclip), 204, limite 1 / 2 s
+- [x] Corrigé au passage : progression côté envoi jamais traitée (motif `select!`), ordre ActionInvoked / NotificationClosed
+- [x] Vérifié en conteneurs (faux serveur de notifications + FileManager1) Ubuntu 24.04 → Fedora 44 ; tests core 12/12
+- [ ] Validation sur ton bureau : rendu GNOME des mises à jour de progression, Copy avec wl-copy — **à faire par toi**
+
 ## M5 — AirDrop natif via OWL (exploratoire)
 - [x] État des lieux et plan : `docs/airdrop.md` (branche `airdrop`), **en attente de validation**
 
 ## Hors périmètre pour l'instant
 - API download (`prepare-download` / `download`, envoi vers un navigateur)
-- Annulation d'un envoi lancé via D-Bus `Send`

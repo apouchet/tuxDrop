@@ -47,9 +47,16 @@ contents:
     file_info:
       mode: 0644
 
+# Enable the user service for everyone on first install.
+scripts:
+  postinstall: packaging/scripts/postinstall.sh
+  preremove: packaging/scripts/preremove.sh
+
 # Binaries are built against glibc 2.36 (Debian bookworm) and need nothing else.
 # Recommended: the Nautilus menu needs nautilus-python, the GNOME tray icon
-# the AppIndicator extension (preinstalled on Ubuntu, to enable on Fedora).
+# the AppIndicator extension (preinstalled on Ubuntu, to enable on Fedora),
+# renaming a device from the tray zenity, copying a received message
+# wl-clipboard.
 overrides:
   deb:
     depends:
@@ -57,9 +64,13 @@ overrides:
     recommends:
       - python3-nautilus
       - gnome-shell-extension-appindicator
+      - zenity
+      - wl-clipboard
   rpm:
     depends:
       - glibc >= 2.36
     recommends:
       - (nautilus-python if nautilus)
       - (gnome-shell-extension-appindicator if gnome-shell)
+      - zenity
+      - wl-clipboard

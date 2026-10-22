@@ -19,6 +19,7 @@ use tuxdrop_core::{local_device_info, server};
 enum Seen {
     Request { verified: bool },
     AutoAccepted,
+    Message(String),
     File(PathBuf),
     Finished(Outcome),
 }
@@ -27,6 +28,9 @@ struct Rx {
     peer: Peer,
     dir: tempfile::TempDir,
     log: Arc<Mutex<Vec<Seen>>>,
+    receiver: Receiver,
+    /// Session of the last request or auto-accepted transfer.
+    session: Arc<Mutex<Option<String>>>,
 }
 
 impl Rx {
@@ -109,27 +113,35 @@ async fn start_rx(accept: bool, delay: Duration, trusted: Option<&str>, pin: Opt
     );
     let (peers_tx, _peers) = mpsc::channel(8);
     let served_me = me.clone();
+    let served = receiver.clone();
     tokio::spawn(async move {
         let _keep = _peers;
-        server::serve(listener, &identity, served_me, receiver, peers_tx)
+        server::serve(listener, &identity, served_me, served, peers_tx)
             .await
             .unwrap();
     });
 
     let log = Arc::new(Mutex::new(Vec::new()));
+    let session = Arc::new(Mutex::new(None));
     let sink = log.clone();
+    let current = session.clone();
     tokio::spawn(async move {
         while let Some(event) = events.recv().await {
             let seen = match event {
                 ReceiveEvent::Request { request, reply } => {
                     let verified = request.is_verified();
+                    *current.lock().unwrap() = Some(request.session_id);
                     tokio::spawn(async move {
                         tokio::time::sleep(delay).await;
                         let _ = reply.send(accept);
                     });
                     Seen::Request { verified }
                 }
-                ReceiveEvent::AutoAccepted { .. } => Seen::AutoAccepted,
+                ReceiveEvent::AutoAccepted { request } => {
+                    *current.lock().unwrap() = Some(request.session_id);
+                    Seen::AutoAccepted
+                }
+                ReceiveEvent::Message { text, .. } => Seen::Message(text),
                 ReceiveEvent::FileReceived { path, .. } => Seen::File(path),
                 ReceiveEvent::Finished { outcome, .. } => Seen::Finished(outcome),
                 ReceiveEvent::Progress { .. } => continue,
@@ -142,6 +154,8 @@ async fn start_rx(accept: bool, delay: Duration, trusted: Option<&str>, pin: Opt
         peer: Peer::new(me, IpAddr::V4(Ipv4Addr::LOCALHOST)),
         dir,
         log,
+        receiver,
+        session,
     }
 }
 
@@ -307,6 +321,74 @@ async fn sender_cancel_cleans_partial_file() {
     }
     assert!(no_part_files(&dl));
     assert!(!dl.join("huge.bin").exists());
+}
+
+#[tokio::test]
+async fn receiver_cancel_stops_sender_and_cleans_partial_file() {
+    let rx = start_rx(true, Duration::ZERO, None, None).await;
+    let tx = Tx::new();
+    let src = tempfile::tempdir().unwrap();
+    let big = src.path().join("huge.bin");
+    std::fs::write(&big, vec![7u8; 64 * 1024 * 1024]).unwrap();
+    let started = Arc::new(tokio::sync::Notify::new());
+    let signal = started.clone();
+    let progress: client::ProgressFn = Arc::new(move |e| {
+        if matches!(e, SendEvent::Progress { sent, .. } if sent > 1024 * 1024) {
+            signal.notify_one();
+        }
+    });
+    let files = client::collect_files(&[big]).unwrap();
+    let send = tx.send_with(&rx, files, None, progress, CancellationToken::new());
+    tokio::pin!(send);
+    tokio::select! {
+        _ = &mut send => panic!("finished before being cancelled"),
+        () = started.notified() => {}
+    }
+    let session = rx.session.lock().unwrap().clone().unwrap();
+    assert!(rx.receiver.cancel_local(&session).await);
+    assert!(!rx.receiver.cancel_local(&session).await);
+    let err = send.await.unwrap_err();
+    assert!(
+        err.to_string().contains("cancelled by the receiver"),
+        "{err}"
+    );
+    rx.wait_for(|log| log.contains(&Seen::Finished(Outcome::Cancelled)))
+        .await;
+    let dl = rx.downloads();
+    for _ in 0..100 {
+        if no_part_files(&dl) {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+    assert!(no_part_files(&dl));
+    assert!(!dl.join("huge.bin").exists());
+}
+
+#[tokio::test]
+async fn text_message_is_delivered_without_upload() {
+    let rx = start_rx(false, Duration::ZERO, None, None).await;
+    let tx = Tx::new();
+    // As the LocalSend apps send a message: one text file carrying the text.
+    let message = || {
+        let mut file = client::collect_files(&[PathBuf::from("Cargo.toml")]).unwrap();
+        file[0].meta.file_type = "text/plain".into();
+        file[0].meta.preview = Some("hello from the phone".into());
+        file
+    };
+    assert_eq!(
+        tx.send(&rx, message(), None).await.unwrap(),
+        SendOutcome::NothingToSend
+    );
+    rx.wait_for(|log| !log.is_empty()).await;
+    assert_eq!(
+        *rx.log.lock().unwrap(),
+        [Seen::Message("hello from the phone".into())]
+    );
+    assert!(!rx.downloads().exists());
+    // Rate limited, so a flood of messages cannot pile up notifications.
+    let err = tx.send(&rx, message(), None).await.unwrap_err();
+    assert!(err.to_string().contains("too many"), "{err}");
 }
 
 #[tokio::test]

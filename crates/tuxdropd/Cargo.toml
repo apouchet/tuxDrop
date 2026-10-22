@@ -1,0 +1,15 @@
+[package]
+name = "tuxdropd"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+tuxdrop-core.workspace = true
+anyhow.workspace = true
+futures-util.workspace = true
+tokio.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true
+zbus.workspace = true
+tokio-util = "0.7"

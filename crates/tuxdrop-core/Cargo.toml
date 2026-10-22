@@ -1,0 +1,37 @@
+[package]
+name = "tuxdrop-core"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+anyhow.workspace = true
+futures-util.workspace = true
+tokio.workspace = true
+tracing.workspace = true
+axum = "0.8"
+bytes = "1"
+dirs = "6"
+getrandom = "0.3"
+hex = "0.4"
+hyper = "1"
+hyper-util = { version = "0.1", features = ["server-auto", "tokio"] }
+if-addrs = "0.13"
+mime_guess = "2"
+rcgen = "0.13"
+reqwest = { version = "0.12", default-features = false, features = ["rustls-tls-manual-roots", "stream", "json"] }
+rustix = { version = "1", features = ["fs", "system"] }
+rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12"] }
+rustls-pemfile = "2"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+sha2 = "0.10"
+socket2 = { version = "0.5", features = ["all"] }
+tokio-rustls = { version = "0.26", default-features = false, features = ["ring", "tls12"] }
+tokio-util = { version = "0.7", features = ["io"] }
+toml = "0.9"
+tower-service = "0.3"
+walkdir = "2"
+
+[dev-dependencies]
+tempfile = "3"

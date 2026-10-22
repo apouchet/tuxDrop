@@ -1,6 +1,6 @@
 //! Client of the tuxdropd session D-Bus API.
 
-use anyhow::{Result, bail};
+use anyhow::{Context, Result, bail};
 
 use crate::human_size;
 
@@ -17,7 +17,9 @@ trait Daemon {
 }
 
 async fn proxy() -> Result<DaemonProxy<'static>> {
-    let conn = zbus::Connection::session().await?;
+    let conn = zbus::Connection::session()
+        .await
+        .context("cannot reach the D-Bus session bus")?;
     let running = zbus::fdo::DBusProxy::new(&conn)
         .await?
         .name_has_owner("org.tuxdrop.Daemon".try_into()?)

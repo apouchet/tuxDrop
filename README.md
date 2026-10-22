@@ -5,19 +5,47 @@ works with the LocalSend app on iPhone, Android, Windows and macOS on the same n
 
 ## Install
 
+Packages (Ubuntu 24.04+ / Debian 12+, Fedora 37+):
+
 ```sh
-cargo install --path crates/tuxdrop
-cargo install --path crates/tuxdropd
-install -Dm644 packaging/tuxdropd.service ~/.config/systemd/user/tuxdropd.service
-systemctl --user daemon-reload
+sudo apt install ./tuxdrop_<version>_amd64.deb     # Ubuntu / Debian
+sudo dnf install ./tuxdrop-<version>-1.x86_64.rpm  # Fedora
+```
+
+Without a package:
+
+```sh
+cargo build --release
+sudo install -m755 target/release/tuxdrop target/release/tuxdropd /usr/local/bin/
+sudo install -Dm644 packaging/tuxdropd.service /usr/lib/systemd/user/tuxdropd.service
+```
+
+Then, as each user who wants to receive files:
+
+```sh
 systemctl --user enable --now tuxdropd
 ```
 
-With ufw enabled, open the LocalSend port (discovery is UDP, transfers are TCP):
+The packages ship firewall definitions but do not open anything. Port 53317 is used for UDP
+discovery and TCP transfers:
 
 ```sh
-sudo ufw allow 53317
+sudo ufw allow from 192.168.0.0/16 to any app tuxDrop   # ufw, local network only
+sudo firewall-cmd --permanent --add-service=tuxdrop && sudo firewall-cmd --reload  # firewalld
 ```
+
+Fedora Workstation's default zone already accepts ports above 1024, so firewalld usually needs
+nothing.
+
+## Build packages
+
+Requires Docker. Compiles in Debian bookworm (glibc 2.36) and packages with nfpm:
+
+```sh
+scripts/package.sh   # -> dist/tuxdrop_<version>_amd64.deb, dist/tuxdrop-<version>-1.x86_64.rpm
+```
+
+The version comes from `Cargo.toml` (`[workspace.package]`).
 
 ## Use
 

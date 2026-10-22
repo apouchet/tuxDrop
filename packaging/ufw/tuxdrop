@@ -1,0 +1,4 @@
+[tuxDrop]
+title=tuxDrop
+description=LocalSend-compatible file sharing (UDP discovery, TCP transfers)
+ports=53317

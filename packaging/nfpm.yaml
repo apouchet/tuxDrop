@@ -1,0 +1,49 @@
+# Builds both the .deb and the .rpm; run through scripts/package.sh.
+name: tuxdrop
+arch: amd64
+platform: linux
+version: ${VERSION}
+section: net
+priority: optional
+maintainer: Antoine Pouchet <antoine.pouchet@nexelec.fr>
+license: MIT
+description: |
+  AirDrop-like file sharing for Linux.
+  Speaks the LocalSend v2 protocol, so it works with the LocalSend apps on
+  iPhone, Android, Windows and macOS on the same network.
+
+contents:
+  - src: target/docker/release/tuxdrop
+    dst: /usr/bin/tuxdrop
+    file_info:
+      mode: 0755
+  - src: target/docker/release/tuxdropd
+    dst: /usr/bin/tuxdropd
+    file_info:
+      mode: 0755
+  - src: packaging/tuxdropd.service
+    dst: /usr/lib/systemd/user/tuxdropd.service
+    file_info:
+      mode: 0644
+  - src: packaging/ufw/tuxdrop
+    dst: /etc/ufw/applications.d/tuxdrop
+    type: config|noreplace
+    file_info:
+      mode: 0644
+  - src: packaging/firewalld/tuxdrop.xml
+    dst: /usr/lib/firewalld/services/tuxdrop.xml
+    file_info:
+      mode: 0644
+  - src: README.md
+    dst: /usr/share/doc/tuxdrop/README.md
+    file_info:
+      mode: 0644
+
+# Binaries are built against glibc 2.36 (Debian bookworm) and need nothing else.
+overrides:
+  deb:
+    depends:
+      - libc6 (>= 2.36)
+  rpm:
+    depends:
+      - glibc >= 2.36

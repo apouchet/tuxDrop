@@ -233,7 +233,9 @@ async fn main() -> Result<()> {
     let mut events = node.start_receiver(peers_tx.clone())?;
     node.start_discovery(peers_tx)?;
 
-    let conn = zbus::Connection::session().await?;
+    let conn = zbus::Connection::session()
+        .await
+        .context("cannot reach the D-Bus session bus (run tuxdropd inside a user session)")?;
     let notifier = NotificationsProxy::new(&conn).await?;
     let mut actions = notifier.receive_action_invoked().await?;
     tracing::info!(

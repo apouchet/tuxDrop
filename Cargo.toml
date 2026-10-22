@@ -7,6 +7,10 @@ version = "0.1.0"
 edition = "2024"
 license = "MIT"
 
+[profile.release]
+strip = true
+lto = "thin"
+
 [workspace.dependencies]
 tuxdrop-core = { path = "crates/tuxdrop-core" }
 anyhow = "1"

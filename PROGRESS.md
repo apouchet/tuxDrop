@@ -21,6 +21,12 @@ Plan : `~/.claude/plans/j-aimerais-cree-un-programme-purring-acorn.md`
 - [x] CLI : `status`, `accept`, `reject` via D-Bus
 - [x] Unité `systemd --user` (`packaging/tuxdropd.service`)
 
+## Paquets
+- [x] `.deb` + `.rpm` via nfpm (`packaging/nfpm.yaml`), build glibc 2.36 dans Docker (`scripts/package.sh`)
+- [x] Profils pare-feu ufw et firewalld livrés, non activés
+- [x] Installation vérifiée dans `ubuntu:24.04` et `fedora:44`
+- [ ] Signature des paquets / dépôt APT-DNF (si diffusion)
+
 ## M3 — BLE + Wi-Fi Direct (après feu vert)
 ## M4 — UI GTK4 + Nautilus (après feu vert)
 ## M5 — AirDrop natif via OWL (exploratoire)

@@ -37,6 +37,7 @@ Plan : `~/.claude/plans/j-aimerais-cree-un-programme-purring-acorn.md`
 ## M3 — BLE + Wi-Fi Direct (après feu vert)
 ## M4 — UI GTK4 + Nautilus (après feu vert)
 ## M5 — AirDrop natif via OWL (exploratoire)
+- [x] État des lieux et plan : `docs/airdrop.md` (branche `airdrop`), **en attente de validation**
 
 ## Hors périmètre pour l'instant
 - API download (`prepare-download` / `download`, envoi vers un navigateur)

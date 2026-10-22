@@ -27,6 +27,13 @@ Plan : `~/.claude/plans/j-aimerais-cree-un-programme-purring-acorn.md`
 - [x] Installation vérifiée dans `ubuntu:24.04` et `fedora:44`
 - [ ] Signature des paquets / dépôt APT-DNF (si diffusion)
 
+## Découverte fiable (Wi-Fi)
+- [x] CLI `peers` / `send <alias>` via le démon quand il tourne (`Announce`, `ListPeers` a(ssssu))
+- [x] Repli unicast : balayage /24 unique si personne ne répond en 1,5 s ; réponse UDP aussi en unicast
+- [x] Logs debug découverte (annonce reçue, register reçu, réponse envoyée, balayage)
+- [x] Validé PC1 (filaire) ↔ PC2 (Wi-Fi, power save) : peers 5/5 et 8/8 en autonome, envoi dans les deux sens
+- [ ] `tuxdrop trust` : valider l'empreinte (accepte aujourd'hui un alias ou un préfixe sans effet)
+
 ## M3 — BLE + Wi-Fi Direct (après feu vert)
 ## M4 — UI GTK4 + Nautilus (après feu vert)
 ## M5 — AirDrop natif via OWL (exploratoire)

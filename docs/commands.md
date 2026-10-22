@@ -23,7 +23,16 @@ the same network.
 ## How a transfer works
 
 1. **Discovery.** A device multicasts a short JSON announcement (UDP `224.0.0.167:53317`) on
-   every IPv4 interface. Devices that hear it answer with their alias, fingerprint and port.
+   every IPv4 interface. Devices that hear it answer with their alias, fingerprint and port:
+   - **By HTTPS:** they `register` on the TCP port of the announcing device.
+   - **By UDP:** used when the HTTPS answer is impossible; sent both to the multicast group and
+     directly to the announcer.
+
+   Wi-Fi access points deliver multicast to their clients without retransmission; on a laptop
+   with Wi-Fi power saving, about half of the announcements are lost. So when nobody (or not the
+   wanted device) answers within 1.5 seconds, the announcement is sent **once** more by unicast
+   to every address of the local networks. Only physical interfaces are covered, and at most
+   the /24 around each address.
 2. **Request.** The sender asks the receiver over HTTPS (`prepare-upload`), listing the file
    names and sizes.
 3. **Approval.** The receiver checks the request:
@@ -81,19 +90,23 @@ you with `tuxdrop trust`.
 tuxdrop peers [-t, --timeout <SECONDS>]     # default: 3
 ```
 
-Lists the devices that answer on the local network.
-- It sends one announcement, then listens for `--timeout` seconds.
-- Each device appears once, as alias, address and the first 16 characters of its fingerprint.
+Lists the devices that answer on the local network, each once, as alias, address and the first
+16 characters of its fingerprint.
+
+- **When `tuxdropd` runs**, the daemon announces and collects the answers, because other
+  devices answer on its port. `peers` waits `--timeout` seconds, then shows the devices that
+  answered.
+- **Without the daemon**, for example over SSH with no session bus, `peers` announces and
+  listens itself.
+
+In both cases the unicast fallback described in
+[How a transfer works](#how-a-transfer-works) applies.
 
 ```
 $ tuxdrop peers
 iPhone de Marie          192.168.1.34:53317                       9F2C41D07AB3E5C8
 alpha                    192.168.1.212:53317                      4CEE7EB4FCC499F6
 ```
-
-It works with or without the daemon: the UDP port is shared (`SO_REUSEPORT`). There is a known
-limitation when `tuxdropd` is running on the same machine; see
-[Troubleshooting](#troubleshooting).
 
 ### `tuxdrop send`
 
@@ -107,7 +120,7 @@ Sends one or more files or folders to one device.
 
 | Form | Example | How it is found |
 |---|---|---|
-| alias (not case-sensitive) | `alpha`, `"iPhone de Marie"` | discovery, up to `--timeout` seconds (default 5) |
+| alias (not case-sensitive) | `alpha`, `"iPhone de Marie"` | the daemon's list of devices; if absent, discovery for up to `--timeout` seconds (default 5) |
 | fingerprint prefix, 6+ characters | `9F2C41` | discovery, as above |
 | IP address | `192.168.1.34` | contacted directly on port 53317 |
 | IP and port | `192.168.1.34:53318`, `[2001:db8::34]:53317` | contacted directly |
@@ -197,12 +210,12 @@ Needs `tuxdropd`. It shows two things:
 ```
 $ tuxdrop status
 pending 89d93ca544121debe565604c5150fd64  from bravo (verified): 1 file(s), 3 B
-nearby devices:
-  bravo                    192.168.1.50:53317                       52A8984B9E5EB8A2
+devices seen in the last 5 minutes:
+  bravo                    192.168.1.50:53317                       52A8984B9E5EB8A2  12s ago
 ```
 
-Each call also makes the daemon announce itself, so devices that just answered appear on the next
-call.
+`status` sends nothing on the network. It shows the daemon's list as it is; use `tuxdrop peers`
+to refresh it.
 
 ### `tuxdrop accept` / `tuxdrop reject`
 
@@ -265,8 +278,9 @@ e.g. `systemctl --user edit tuxdropd` and add `Environment=RUST_LOG=debug`.
 **What it does:**
 
 1. Loads the configuration and the device identity, creating the identity on first run.
-2. Listens on the configured port: TCP (IPv4 and IPv6) for transfers, UDP multicast for
-   discovery. It announces itself once at startup and answers other devices' announcements.
+2. Listens on the configured port: TCP (IPv4 and IPv6) for transfers, UDP for discovery. It
+   announces itself once at startup, answers other devices' announcements, and keeps the list
+   of devices seen in the last 5 minutes.
 3. Registers `org.tuxdrop.Daemon` on the D-Bus session bus. Only one daemon can run per user.
    With several users logged in at once, only the first one gets the port.
 4. For each incoming request:
@@ -285,7 +299,8 @@ status/accept/reject` use it, and so can scripts or a future graphical interface
 
 | Member | Signature | Description |
 |---|---|---|
-| `ListPeers()` | → `a(sss)` | nearby devices: alias, address, fingerprint. Also re-announces. |
+| `ListPeers()` | → `a(ssssu)` | devices seen in the last 5 minutes: alias, address, fingerprint, `https`/`http`, seconds since last seen |
+| `Announce()` | → | ask nearby devices to answer (with the unicast fallback); they appear in `ListPeers` within ~2 s |
 | `ListPending()` | → `a(ssbut)` | pending requests: id, alias, verified, file count, total bytes |
 | `Accept(id)` | `s` → | accept a pending request |
 | `Reject(id)` | `s` → | decline a pending request |
@@ -344,10 +359,17 @@ pin = "1234"                                 # senders must give it (tuxdrop sen
 - Guest Wi-Fi and some company networks block traffic between clients.
 - As a last resort, send to the IP address directly (`tuxdrop send 192.168.1.34 file`).
 
-**`tuxdrop peers` / `send <alias>` miss devices while `tuxdropd` is running.**
-Other tuxDrop or LocalSend devices answer an announcement by contacting the TCP port of the
-machine that sent it. When the daemon is running, the daemon gets that answer, not the CLI. Use
-`tuxdrop status` to see the devices the daemon knows, or send to the IP address.
+**Discovery works one way only, or only sometimes.** See what each side receives with debug
+logs:
+- **CLI:** `RUST_LOG=tuxdrop_core=debug tuxdrop peers`
+- **Daemon:** `systemctl --user edit tuxdropd`, add `Environment=RUST_LOG=tuxdrop_core=debug`,
+  restart it, and watch `journalctl --user -u tuxdropd -f`.
+
+The lines to look for:
+- `announcement from <ip>`: a datagram was received.
+- `register from <ip>`: an HTTPS answer arrived.
+- `answered <ip> by register` or `answering by UDP`: what this device sent back.
+- `sweeping N addresses`: the unicast fallback was used.
 
 **`port 53317 is taken`.** `tuxdrop recv` cannot run next to `tuxdropd` or the LocalSend app.
 Stop one of them.

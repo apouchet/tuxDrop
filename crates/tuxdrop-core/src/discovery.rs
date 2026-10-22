@@ -1,9 +1,13 @@
-//! LocalSend multicast discovery (UDP 224.0.0.167).
+//! LocalSend discovery over UDP port 53317.
 //!
-//! On an announcement (`announce: true`) we answer through HTTP `register`,
-//! falling back to a multicast reply with `announce: false`.
+//! An announcement (`announce: true`) is multicast to 224.0.0.167; devices
+//! answer through HTTP `register`, falling back to a multicast reply with
+//! `announce: false`. Multicast is unreliable towards Wi-Fi clients, so a
+//! caller that gets no answer can repeat the announcement by unicast to every
+//! address of the local networks ([`sweep`]).
 
 use std::net::{IpAddr, Ipv4Addr, SocketAddr, SocketAddrV4};
+use std::path::Path;
 use std::sync::Arc;
 
 use anyhow::Result;
@@ -30,6 +34,26 @@ impl Peer {
             protocol: info.protocol.unwrap_or(Protocol::Https),
             addr: addr.to_canonical(),
             info,
+        }
+    }
+
+    /// A peer reported by a discovery table (tuxdropd) rather than by the
+    /// device itself; the protocol version is unknown.
+    pub fn known(alias: String, fingerprint: String, addr: SocketAddr, protocol: Protocol) -> Self {
+        Self {
+            info: DeviceInfo {
+                alias,
+                version: String::new(),
+                device_model: None,
+                device_type: None,
+                fingerprint,
+                port: Some(addr.port()),
+                protocol: Some(protocol),
+                download: false,
+            },
+            addr: addr.ip().to_canonical(),
+            port: addr.port(),
+            protocol,
         }
     }
 
@@ -129,6 +153,11 @@ impl Discovery {
             if same_fingerprint(&msg.info.fingerprint, &self.me.fingerprint) {
                 continue;
             }
+            tracing::debug!(
+                "announcement from {src}: {:?} (announce: {})",
+                msg.info.alias,
+                msg.announce
+            );
             let peer = Peer::new(msg.info, src.ip());
             if msg.announce {
                 self.answer(peer.clone());
@@ -144,17 +173,98 @@ impl Discovery {
         let me = self.me.clone();
         let port = self.port;
         tokio::spawn(async move {
-            if let Err(e) = client::register(&identity, &me, &peer).await {
-                tracing::debug!(
-                    "register with {} failed ({e:#}), answering by UDP",
-                    peer.addr
-                );
-                if let Err(e) = multicast(&me, false, port) {
-                    tracing::warn!("multicast answer failed: {e:#}");
+            match client::register(&identity, &me, &peer).await {
+                Ok(_) => tracing::debug!("answered {} by register", peer.addr),
+                Err(e) => {
+                    tracing::debug!(
+                        "register with {} failed ({e:#}), answering by UDP",
+                        peer.addr
+                    );
+                    // The protocol answers by multicast; the unicast copy is
+                    // what reliably reaches a Wi-Fi client.
+                    if let Err(e) = multicast(&me, false, port) {
+                        tracing::warn!("multicast answer failed: {e:#}");
+                    }
+                    if let Err(e) = unicast(&me, SocketAddr::new(peer.addr, port)) {
+                        tracing::debug!("unicast answer to {} failed: {e:#}", peer.addr);
+                    }
                 }
             }
         });
     }
+}
+
+/// Answers one device directly (`announce: false`).
+fn unicast(me: &DeviceInfo, dest: SocketAddr) -> Result<()> {
+    let payload = serde_json::to_vec(&Announcement {
+        info: me.clone(),
+        announce: false,
+    })?;
+    std::net::UdpSocket::bind((Ipv4Addr::UNSPECIFIED, 0))?.send_to(&payload, dest)?;
+    Ok(())
+}
+
+/// Sends our announcement by unicast to every host of the local networks
+/// (at most the /24 around each address) of physical interfaces; returns the
+/// number of datagrams sent. Use it once, when multicast got no answer.
+pub fn sweep(me: &DeviceInfo, port: u16) -> Result<usize> {
+    let payload = serde_json::to_vec(&Announcement {
+        info: me.clone(),
+        announce: true,
+    })?;
+    let mut sent = 0;
+    for iface in if_addrs::get_if_addrs()? {
+        let if_addrs::IfAddr::V4(v4) = &iface.addr else {
+            continue;
+        };
+        // Bridges, veth, VPN tunnels… have no backing device.
+        let physical = Path::new("/sys/class/net")
+            .join(&iface.name)
+            .join("device")
+            .exists();
+        if !physical || v4.ip.is_loopback() || v4.ip.is_link_local() {
+            continue;
+        }
+        let targets = sweep_targets(v4.ip, v4.prefixlen);
+        tracing::debug!(
+            "sweeping {} addresses from {} ({})",
+            targets.len(),
+            v4.ip,
+            iface.name
+        );
+        // Datagrams to hosts awaiting ARP resolution (~1 KiB each) hold the
+        // socket's send buffer until resolved or timed out: one non-blocking
+        // socket per network, with a buffer large enough for a whole /24 (the
+        // kernel caps it at twice net.core.wmem_max, 416 KiB by default).
+        let socket = Socket::new(Domain::IPV4, Type::DGRAM, Some(socket2::Protocol::UDP))?;
+        socket.set_send_buffer_size(512 * 1024)?;
+        socket.set_nonblocking(true)?;
+        socket.bind(&SocketAddrV4::new(v4.ip, 0).into())?;
+        let socket = std::net::UdpSocket::from(socket);
+        for target in targets {
+            match socket.send_to(&payload, (target, port)) {
+                Ok(_) => sent += 1,
+                Err(e) => tracing::trace!("sweep to {target} failed: {e}"),
+            }
+        }
+    }
+    Ok(sent)
+}
+
+/// Host addresses of `ip`'s network, narrowed to its /24 when larger,
+/// without `ip` itself.
+fn sweep_targets(ip: Ipv4Addr, prefixlen: u8) -> Vec<Ipv4Addr> {
+    let prefix = u32::from(prefixlen.clamp(24, 32));
+    if prefix >= 31 {
+        return Vec::new();
+    }
+    let mask = u32::MAX << (32 - prefix);
+    let network = u32::from(ip) & mask;
+    let broadcast = network | !mask;
+    (network + 1..broadcast)
+        .map(Ipv4Addr::from)
+        .filter(|a| *a != ip)
+        .collect()
 }
 
 /// Multicasts `me` on every IPv4 interface; `announce: true` asks other
@@ -180,4 +290,39 @@ pub fn multicast(me: &DeviceInfo, announce: bool, port: u16) -> Result<()> {
         }
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn sweep_covers_the_subnet_except_self() {
+        let ip = Ipv4Addr::new(192, 168, 1, 212);
+        let targets = sweep_targets(ip, 24);
+        assert_eq!(targets.len(), 253);
+        assert_eq!(targets[0], Ipv4Addr::new(192, 168, 1, 1));
+        assert_eq!(targets[252], Ipv4Addr::new(192, 168, 1, 254));
+        assert!(!targets.contains(&ip));
+    }
+
+    #[test]
+    fn sweep_narrows_large_networks_and_keeps_small_ones() {
+        let wide = sweep_targets(Ipv4Addr::new(10, 1, 2, 3), 8);
+        assert_eq!(wide.len(), 253);
+        assert!(wide.iter().all(|a| a.octets()[..3] == [10, 1, 2]));
+        assert_eq!(sweep_targets(Ipv4Addr::new(10, 0, 0, 1), 30).len(), 1);
+        assert!(sweep_targets(Ipv4Addr::new(10, 0, 0, 1), 31).is_empty());
+    }
+
+    #[test]
+    fn known_peer_targets_reported_address() {
+        let addr: SocketAddr = "192.168.1.16:53317".parse().unwrap();
+        let peer = Peer::known("fedora".into(), "C41ADA".into(), addr, Protocol::Https);
+        assert_eq!(
+            peer.api_url("info"),
+            "https://192.168.1.16:53317/api/localsend/v2/info"
+        );
+        assert!(peer.matches("FEDORA"));
+    }
 }

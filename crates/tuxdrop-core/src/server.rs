@@ -125,6 +125,7 @@ async fn register(
     Json(info): Json<DeviceInfo>,
 ) -> Json<DeviceInfo> {
     if !same_fingerprint(&info.fingerprint, &app.me.fingerprint) {
+        tracing::debug!("register from {}: {:?}", conn.addr, info.alias);
         let _ = app.peers.try_send(Peer::new(info, conn.addr));
     }
     Json(app.me.clone())

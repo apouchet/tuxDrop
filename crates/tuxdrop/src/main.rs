@@ -5,15 +5,15 @@ use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-use anyhow::{Result, bail};
+use anyhow::{Context, Result, bail};
 use clap::{Parser, Subcommand};
 use tokio::io::{AsyncBufReadExt, BufReader};
 use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
-use tuxdrop_core::Node;
 use tuxdrop_core::client::{self, SendEvent, SendOutcome, SendRequest};
 use tuxdrop_core::discovery::Peer;
 use tuxdrop_core::receive::{IncomingRequest, Outcome, ReceiveEvent};
+use tuxdrop_core::{Node, SWEEP_DELAY};
 
 mod daemon;
 
@@ -132,46 +132,69 @@ fn describe(peer: &Peer) -> String {
 }
 
 async fn peers(timeout: u64) -> Result<()> {
-    let node = Node::load()?;
+    let timeout = Duration::from_secs(timeout);
+    let found = match daemon::running().await {
+        Some(d) => daemon::discover(&d, timeout).await?,
+        None => discover(&Node::load()?, timeout, None).await?,
+    };
+    if found.is_empty() {
+        eprintln!("no device found");
+    }
+    for peer in &found {
+        println!("{}", describe(peer));
+    }
+    Ok(())
+}
+
+/// Standalone discovery (no daemon). Announces, then falls back to a unicast
+/// sweep if nobody (or not `target`) answered after `SWEEP_DELAY`. Stops early
+/// once `target` is found.
+async fn discover(node: &Node, timeout: Duration, target: Option<&str>) -> Result<Vec<Peer>> {
     let (tx, mut rx) = mpsc::channel(32);
     node.start_discovery(tx)?;
-    let mut seen = HashMap::new();
-    let deadline = tokio::time::sleep(Duration::from_secs(timeout));
-    tokio::pin!(deadline);
+    let mut found: HashMap<String, Peer> = HashMap::new();
+    let deadline = tokio::time::sleep(timeout);
+    let sweep = tokio::time::sleep(SWEEP_DELAY);
+    tokio::pin!(deadline, sweep);
+    let mut swept = false;
     loop {
         tokio::select! {
             Some(peer) = rx.recv() => {
-                if seen.insert(peer.info.fingerprint.clone(), ()).is_none() {
-                    println!("{}", describe(&peer));
+                let done = target.is_some_and(|t| peer.matches(t));
+                found.entry(peer.info.fingerprint.to_ascii_uppercase()).or_insert(peer);
+                if done {
+                    break;
+                }
+            }
+            () = &mut sweep, if !swept => {
+                swept = true;
+                let satisfied = match target {
+                    Some(t) => found.values().any(|p| p.matches(t)),
+                    None => !found.is_empty(),
+                };
+                if !satisfied {
+                    node.sweep();
                 }
             }
             () = &mut deadline => break,
         }
     }
-    if seen.is_empty() {
-        eprintln!("no device found");
-    }
-    Ok(())
+    Ok(found.into_values().collect())
 }
 
 async fn find_peer(node: &Node, target: &str, timeout: u64) -> Result<Peer> {
     if let Some(addr) = client::parse_address(target) {
         return client::resolve_address(&node.identity, &node.me, addr).await;
     }
-    let (tx, mut rx) = mpsc::channel(32);
-    node.start_discovery(tx)?;
-    let search = async {
-        while let Some(peer) = rx.recv().await {
-            if peer.matches(target) {
-                return Some(peer);
-            }
-        }
-        None
+    let timeout = Duration::from_secs(timeout);
+    let found = match daemon::running().await {
+        Some(d) => daemon::find(&d, target, timeout).await?,
+        None => discover(node, timeout, Some(target))
+            .await?
+            .into_iter()
+            .find(|p| p.matches(target)),
     };
-    match tokio::time::timeout(Duration::from_secs(timeout), search).await {
-        Ok(Some(peer)) => Ok(peer),
-        _ => bail!("device {target:?} not found (try `tuxdrop peers`)"),
-    }
+    found.with_context(|| format!("device {target:?} not found (try `tuxdrop peers`)"))
 }
 
 async fn send(target: &str, paths: &[PathBuf], pin: Option<&str>, timeout: u64) -> Result<()> {

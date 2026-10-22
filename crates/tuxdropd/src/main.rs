@@ -16,7 +16,7 @@ use tokio_util::sync::CancellationToken;
 use tuxdrop_core::client::{self, SendEvent, SendOutcome, SendRequest};
 use tuxdrop_core::discovery::Peer;
 use tuxdrop_core::receive::{IncomingRequest, Outcome, ReceiveEvent};
-use tuxdrop_core::{DECISION_TIMEOUT, Node, random_id};
+use tuxdrop_core::{DECISION_TIMEOUT, Node, SWEEP_DELAY, random_id};
 use zbus::fdo;
 use zbus::object_server::SignalEmitter;
 
@@ -59,10 +59,33 @@ impl Shared {
         true
     }
 
-    fn live_peers(&self) -> Vec<Peer> {
+    /// Peers seen within `PEER_TTL`, with when they were last seen.
+    fn live_peers(&self) -> Vec<(Peer, Instant)> {
         let mut peers = self.peers.lock().unwrap();
         peers.retain(|_, (_, seen)| seen.elapsed() < PEER_TTL);
-        peers.values().map(|(p, _)| p.clone()).collect()
+        peers.values().cloned().collect()
+    }
+
+    /// Multicasts an announcement; if no device answers within
+    /// `SWEEP_DELAY`, repeats it once by unicast.
+    fn announce(self: &Arc<Self>) {
+        let started = Instant::now();
+        if let Err(e) = self.node.announce() {
+            tracing::warn!("announce failed: {e:#}");
+        }
+        let shared = self.clone();
+        tokio::spawn(async move {
+            tokio::time::sleep(SWEEP_DELAY).await;
+            let answered = shared
+                .peers
+                .lock()
+                .unwrap()
+                .values()
+                .any(|(_, seen)| *seen >= started);
+            if !answered {
+                shared.node.sweep();
+            }
+        });
     }
 
     async fn find_peer(&self, target: &str) -> Result<Peer> {
@@ -71,6 +94,7 @@ impl Shared {
         }
         self.live_peers()
             .into_iter()
+            .map(|(p, _)| p)
             .find(|p| p.matches(target))
             .with_context(|| format!("device {target:?} not found"))
     }
@@ -82,20 +106,25 @@ struct Api {
 
 #[zbus::interface(name = "org.tuxdrop.Daemon1")]
 impl Api {
-    /// (alias, address, fingerprint). Also re-announces, so calling again a
-    /// second later returns devices that just answered.
-    fn list_peers(&self) -> Vec<(String, String, String)> {
-        if let Err(e) = self.shared.node.announce() {
-            tracing::warn!("announce failed: {e:#}");
-        }
+    /// (alias, address, fingerprint, "https"/"http", seconds since last seen)
+    /// for devices seen in the last 5 minutes.
+    fn list_peers(&self) -> Vec<(String, String, String, String, u32)> {
         self.shared
             .live_peers()
             .into_iter()
-            .map(|p| {
+            .map(|(p, seen)| {
                 let addr = SocketAddr::new(p.addr, p.port).to_string();
-                (p.info.alias, addr, p.info.fingerprint)
+                let age = seen.elapsed().as_secs() as u32;
+                let protocol = p.protocol.scheme().to_owned();
+                (p.info.alias, addr, p.info.fingerprint, protocol, age)
             })
             .collect()
+    }
+
+    /// Asks nearby devices to answer; they appear in `ListPeers` within a
+    /// couple of seconds.
+    fn announce(&self) {
+        self.shared.announce();
     }
 
     /// (id, sender alias, identity verified, file count, total bytes)

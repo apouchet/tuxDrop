@@ -37,6 +37,14 @@ impl Protocol {
             Protocol::Https => "https",
         }
     }
+
+    pub fn from_scheme(scheme: &str) -> Option<Self> {
+        match scheme {
+            "http" => Some(Protocol::Http),
+            "https" => Some(Protocol::Https),
+            _ => None,
+        }
+    }
 }
 
 /// Device description shared by announcements, `register` and `prepare-upload`.

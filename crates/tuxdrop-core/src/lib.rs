@@ -28,6 +28,10 @@ use crate::trust::TrustStore;
 /// How long an incoming transfer waits for the user before being declined.
 pub const DECISION_TIMEOUT: Duration = Duration::from_secs(60);
 
+/// How long to wait for answers to a multicast announcement before falling
+/// back to [`Node::sweep`].
+pub const SWEEP_DELAY: Duration = Duration::from_millis(1500);
+
 /// 128-bit random identifier, hex encoded (session ids, tokens, file ids).
 pub fn random_id() -> String {
     let mut bytes = [0u8; 16];
@@ -82,6 +86,15 @@ impl Node {
     /// Asks nearby devices to answer; they show up on the discovery channel.
     pub fn announce(&self) -> Result<()> {
         discovery::multicast(&self.me, true, self.config.port)
+    }
+
+    /// Unicast fallback when [`Node::announce`] got no answer after
+    /// [`SWEEP_DELAY`]: Wi-Fi often drops multicast.
+    pub fn sweep(&self) {
+        match discovery::sweep(&self.me, self.config.port) {
+            Ok(n) => tracing::debug!("no answer to multicast, announced to {n} addresses"),
+            Err(e) => tracing::warn!("unicast sweep failed: {e:#}"),
+        }
     }
 
     /// Serves the upload API on every interface; transfer events arrive on

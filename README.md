@@ -88,5 +88,5 @@ pin = "1234"                              # senders must provide it
 - `crates/tuxdrop-core`: protocol, discovery, HTTPS server/client, receive logic, trust store
 - `crates/tuxdrop`: CLI
 - `crates/tuxdropd`: daemon with notifications and the `org.tuxdrop.Daemon1` session D-Bus API
-  (`ListPeers`, `ListPending`, `Accept`, `Reject`, `Send`; signals `IncomingRequest`, `Progress`,
+  (`ListPeers`, `Announce`, `ListPending`, `Accept`, `Reject`, `Send`; signals `IncomingRequest`, `Progress`,
   `TransferFinished`)

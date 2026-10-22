@@ -49,6 +49,8 @@ The version comes from `Cargo.toml` (`[workspace.package]`).
 
 ## Use
 
+Full reference for every command, the daemon and its D-Bus API: [docs/commands.md](docs/commands.md).
+
 ```sh
 tuxdrop peers                       # nearby devices
 tuxdrop send iPhone photo.jpg dir/  # alias, fingerprint prefix or IP[:port]

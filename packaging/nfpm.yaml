@@ -38,6 +38,10 @@ contents:
     dst: /usr/share/doc/tuxdrop/README.md
     file_info:
       mode: 0644
+  - src: docs/commands.md
+    dst: /usr/share/doc/tuxdrop/commands.md
+    file_info:
+      mode: 0644
 
 # Binaries are built against glibc 2.36 (Debian bookworm) and need nothing else.
 overrides:

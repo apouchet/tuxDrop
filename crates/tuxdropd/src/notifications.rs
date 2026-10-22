@@ -61,21 +61,23 @@ impl NotificationsProxy<'_> {
         .await
     }
 
-    pub async fn inform(&self, summary: &str, body: &str) {
-        if let Err(e) = self
-            .notify(
-                "tuxDrop",
-                0,
-                "document-send",
-                summary,
-                &escape(body),
-                &[],
-                HashMap::new(),
-                -1,
-            )
-            .await
-        {
+    /// Shows a notification without buttons, replacing `replaces` unless it
+    /// is 0; returns its id, 0 if it could not be shown.
+    pub async fn inform(&self, replaces: u32, summary: &str, body: &str) -> u32 {
+        self.notify(
+            "tuxDrop",
+            replaces,
+            "document-send",
+            summary,
+            &escape(body),
+            &[],
+            HashMap::new(),
+            -1,
+        )
+        .await
+        .unwrap_or_else(|e| {
             tracing::warn!("notification failed: {e}");
-        }
+            0
+        })
     }
 }

@@ -16,7 +16,7 @@ the same network.
 - [tuxdrop](#tuxdrop): [info](#tuxdrop-info) · [peers](#tuxdrop-peers) · [send](#tuxdrop-send) ·
   [recv](#tuxdrop-recv) · [status](#tuxdrop-status) · [accept / reject](#tuxdrop-accept--tuxdrop-reject) ·
   [trust / untrust / trusted](#tuxdrop-trust--untrust--trusted)
-- [tuxdropd](#tuxdropd)
+- [tuxdropd](#tuxdropd): [file manager menu](#file-manager-menu) · [D-Bus API](#d-bus-api)
 - [Files and configuration](#files-and-configuration)
 - [Troubleshooting](#troubleshooting)
 
@@ -291,6 +291,27 @@ e.g. `systemctl --user edit tuxdropd` and add `Environment=RUST_LOG=debug`.
    - **No answer within 60 seconds:** declined, and the notification is closed.
 5. When a transfer ends, a notification says "Files received" (with the folder), "Transfer
    cancelled" or "Transfer failed" (with the reason).
+6. For a transfer started through D-Bus `Send` (the Files menu), a notification says
+   "Sending to …", then "Sent to …" or "Sending to … failed" with the reason. An error before
+   the transfer starts (device gone, unreadable file) gives "Sending failed".
+7. Shows a tray icon. Clicking it lists the devices seen in the last 5 minutes and asks nearby
+   devices to answer; new ones appear in the open menu. **Refresh** asks again. On GNOME the
+   icon needs the AppIndicator extension (see the README); without it the daemon logs
+   `no system tray` and the icon appears as soon as the extension is enabled.
+
+### File manager menu
+
+In Files (Nautilus), right-click files or folders, then **tuxDrop**: the submenu lists the devices
+known to the daemon. Clicking one calls `Send` with the device fingerprint and the selected
+paths. Opening the menu also calls `Announce` (at most every 5 seconds), so a device that was
+missing appears when the menu is opened again.
+
+- **"tuxdropd is not running"**: start the daemon.
+- **"No device found"**: wait a couple of seconds and right-click again.
+- Only local files are offered; the entry does not appear on network locations.
+
+The extension is `/usr/share/nautilus-python/extensions/tuxdrop.py` and needs nautilus-python.
+After installing or updating it, restart Files with `nautilus -q`.
 
 ### D-Bus API
 
@@ -336,6 +357,7 @@ busctl --user monitor org.tuxdrop.Daemon      # watch the signals
 | `~/.local/share/tuxdrop/trusted.json` | trusted devices |
 | `~/Downloads/tuxDrop/` | default download folder (follows `XDG_DOWNLOAD_DIR`) |
 | `/usr/lib/systemd/user/tuxdropd.service` | user service (packages) |
+| `/usr/share/nautilus-python/extensions/tuxdrop.py` | Files right-click menu (packages) |
 | `/etc/ufw/applications.d/tuxdrop`, `/usr/lib/firewalld/services/tuxdrop.xml` | firewall definitions, not enabled by default |
 
 `config.toml`: every key is optional, and an unknown key is an error.

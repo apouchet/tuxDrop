@@ -2,6 +2,7 @@
 //! and exposes `org.tuxdrop.Daemon1` on the session bus.
 
 mod notifications;
+mod tray;
 
 use std::collections::HashMap;
 use std::net::SocketAddr;
@@ -11,7 +12,7 @@ use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result};
 use futures_util::StreamExt;
-use tokio::sync::{mpsc, oneshot};
+use tokio::sync::{Notify, mpsc, oneshot};
 use tokio_util::sync::CancellationToken;
 use tuxdrop_core::client::{self, SendEvent, SendOutcome, SendRequest};
 use tuxdrop_core::discovery::Peer;
@@ -36,6 +37,8 @@ struct Shared {
     node: Node,
     pending: Mutex<HashMap<String, Pending>>,
     peers: Mutex<HashMap<String, (Peer, Instant)>>,
+    /// Signalled when a device not in `peers` shows up.
+    peers_changed: Notify,
     notifier: NotificationsProxy<'static>,
 }
 
@@ -164,18 +167,29 @@ impl Api {
         paths: Vec<String>,
     ) -> fdo::Result<String> {
         let paths: Vec<PathBuf> = paths.into_iter().map(PathBuf::from).collect();
-        let files =
-            client::collect_files(&paths).map_err(|e| fdo::Error::InvalidArgs(format!("{e:#}")))?;
-        let peer = self
-            .shared
-            .find_peer(target)
-            .await
-            .map_err(|e| fdo::Error::Failed(format!("{e:#}")))?;
+        let files = match client::collect_files(&paths) {
+            Ok(files) => files,
+            Err(e) => return Err(self.send_failed(fdo::Error::InvalidArgs, e).await),
+        };
+        let peer = match self.shared.find_peer(target).await {
+            Ok(peer) => peer,
+            Err(e) => return Err(self.send_failed(fdo::Error::Failed, e).await),
+        };
         let id = random_id();
         let emitter = emitter.into_owned();
         let shared = self.shared.clone();
         let transfer_id = id.clone();
         tokio::spawn(async move {
+            let alias = peer.info.alias.clone();
+            let count = format!("{} file(s)", files.len());
+            let notification = shared
+                .notifier
+                .inform(
+                    0,
+                    &format!("Sending to {alias}"),
+                    &format!("{count}, waiting for {alias} to accept"),
+                )
+                .await;
             let (tx, mut rx) = mpsc::unbounded_channel();
             let progress: client::ProgressFn = Arc::new(move |e| {
                 let _ = tx.send(e);
@@ -202,10 +216,17 @@ impl Api {
                     }
                 }
             };
-            let outcome = match result {
-                Ok(SendOutcome::Completed | SendOutcome::NothingToSend) => "completed".to_owned(),
-                Err(e) => format!("failed: {e:#}"),
+            let (summary, body, outcome) = match result {
+                Ok(SendOutcome::Completed | SendOutcome::NothingToSend) => {
+                    (format!("Sent to {alias}"), count, "completed".to_owned())
+                }
+                Err(e) => (
+                    format!("Sending to {alias} failed"),
+                    format!("{e:#}"),
+                    format!("failed: {e:#}"),
+                ),
             };
+            shared.notifier.inform(notification, &summary, &body).await;
             let _ = Api::transfer_finished(&emitter, &transfer_id, &outcome).await;
         });
         Ok(id)
@@ -247,6 +268,17 @@ impl Api {
             Err(fdo::Error::InvalidArgs(format!("no pending transfer {id}")))
         }
     }
+
+    /// Also shows `e` as a notification: callers such as the file manager
+    /// menu have no other way to report it.
+    async fn send_failed(&self, kind: fn(String) -> fdo::Error, e: anyhow::Error) -> fdo::Error {
+        let message = format!("{e:#}");
+        self.shared
+            .notifier
+            .inform(0, "Sending failed", &message)
+            .await;
+        kind(message)
+    }
 }
 
 #[tokio::main]
@@ -277,6 +309,7 @@ async fn main() -> Result<()> {
         node,
         pending: Mutex::default(),
         peers: Mutex::default(),
+        peers_changed: Notify::new(),
         notifier,
     });
     conn.object_server()
@@ -295,12 +328,16 @@ async fn main() -> Result<()> {
     let peers = shared.clone();
     tokio::spawn(async move {
         while let Some(peer) = peers_rx.recv().await {
-            peers.peers.lock().unwrap().insert(
+            let previous = peers.peers.lock().unwrap().insert(
                 peer.info.fingerprint.to_ascii_uppercase(),
                 (peer, Instant::now()),
             );
+            if previous.is_none() {
+                peers.peers_changed.notify_one();
+            }
         }
     });
+    tokio::spawn(tray::run(shared.clone()));
 
     let on_action = shared.clone();
     tokio::spawn(async move {
@@ -396,6 +433,7 @@ async fn handle(shared: &Arc<Shared>, emitter: &SignalEmitter<'_>, event: Receiv
             shared
                 .notifier
                 .inform(
+                    0,
                     &format!("Receiving from {}", request.sender.alias),
                     &format!("{} file(s) from a trusted device", request.files.len()),
                 )
@@ -432,7 +470,7 @@ async fn handle(shared: &Arc<Shared>, emitter: &SignalEmitter<'_>, event: Receiv
                 ),
             };
             tracing::info!("transfer {session_id}: {signal}");
-            shared.notifier.inform(summary, &body).await;
+            shared.notifier.inform(0, summary, &body).await;
             let _ = Api::transfer_finished(emitter, &session_id, &signal).await;
         }
     }

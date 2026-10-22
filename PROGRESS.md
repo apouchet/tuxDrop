@@ -34,6 +34,15 @@ Plan : `~/.claude/plans/j-aimerais-cree-un-programme-purring-acorn.md`
 - [x] Validé PC1 (filaire) ↔ PC2 (Wi-Fi, power save) : peers 5/5 et 8/8 en autonome, envoi dans les deux sens
 - [ ] `tuxdrop trust` : valider l'empreinte (accepte aujourd'hui un alias ou un préfixe sans effet)
 
+## Intégration bureau (icône + clic droit)
+- [x] Icône de barre (StatusNotifierItem, `ksni`) dans `tuxdropd` : appareils proches, « Refresh »
+- [x] Notifications pour les envois D-Bus `Send` (en cours / envoyé / échec)
+- [x] Extension Nautilus `packaging/nautilus/tuxdrop.py` : sous-menu tuxDrop → appareils → envoi
+- [x] Paquets : extension installée, Recommends nautilus-python + extension AppIndicator
+- [x] Vérifié en conteneurs : menu Nautilus Ubuntu 24.04 → envoi reçu sur Fedora 44 ; menu de l'icône via dbusmenu
+- [ ] Validation visuelle sur ton bureau (icône GNOME, clic droit dans Fichiers) — **à faire par toi**
+- [ ] KDE/Dolphin : hors périmètre
+
 ## M3 — BLE + Wi-Fi Direct (après feu vert)
 ## M4 — UI GTK4 + Nautilus (après feu vert)
 ## M5 — AirDrop natif via OWL (exploratoire)

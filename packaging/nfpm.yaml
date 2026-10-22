@@ -25,6 +25,10 @@ contents:
     dst: /usr/lib/systemd/user/tuxdropd.service
     file_info:
       mode: 0644
+  - src: packaging/nautilus/tuxdrop.py
+    dst: /usr/share/nautilus-python/extensions/tuxdrop.py
+    file_info:
+      mode: 0644
   - src: packaging/ufw/tuxdrop
     dst: /etc/ufw/applications.d/tuxdrop
     type: config|noreplace
@@ -44,10 +48,18 @@ contents:
       mode: 0644
 
 # Binaries are built against glibc 2.36 (Debian bookworm) and need nothing else.
+# Recommended: the Nautilus menu needs nautilus-python, the GNOME tray icon
+# the AppIndicator extension (preinstalled on Ubuntu, to enable on Fedora).
 overrides:
   deb:
     depends:
       - libc6 (>= 2.36)
+    recommends:
+      - python3-nautilus
+      - gnome-shell-extension-appindicator
   rpm:
     depends:
       - glibc >= 2.36
+    recommends:
+      - (nautilus-python if nautilus)
+      - (gnome-shell-extension-appindicator if gnome-shell)

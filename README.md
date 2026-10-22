@@ -37,6 +37,24 @@ sudo firewall-cmd --permanent --add-service=tuxdrop && sudo firewall-cmd --reloa
 Fedora Workstation's default zone already accepts ports above 1024, so firewalld usually needs
 nothing.
 
+## Desktop integration
+
+- **Tray icon**: `tuxdropd` shows an icon listing the nearby devices. GNOME needs the
+  AppIndicator extension:
+  - Ubuntu: preinstalled; if disabled, `gnome-extensions enable ubuntu-appindicators@ubuntu.com`.
+  - Fedora: `sudo dnf install gnome-shell-extension-appindicator`, log out and in, then
+    `gnome-extensions enable appindicatorsupport@rgcjonas.gmail.com`.
+  - KDE Plasma: works as is.
+- **Right-click in Files (Nautilus)**: a **tuxDrop** submenu on files and folders lists the
+  nearby devices; click one to send. It needs nautilus-python (installed as a recommended
+  package: `python3-nautilus` on Ubuntu, `nautilus-python` on Fedora). Restart Files once after
+  installing: `nautilus -q`.
+
+  Without a package: `install -Dm644 packaging/nautilus/tuxdrop.py
+  ~/.local/share/nautilus-python/extensions/tuxdrop.py`.
+
+Both need the daemon (`systemctl --user enable --now tuxdropd`).
+
 ## Build packages
 
 Requires Docker. Compiles in Debian bookworm (glibc 2.36) and packages with nfpm:

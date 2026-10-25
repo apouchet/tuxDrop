@@ -1,0 +1,32 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!-- Starts tuxDrop at login. The APP and LOG placeholders are filled in by
+     scripts/install-macos.sh, or by tuxdropd for its "Open at Login" entry. -->
+<plist version="1.0">
+<dict>
+	<key>Label</key>
+	<string>org.tuxdrop.tuxdropd</string>
+	<key>ProgramArguments</key>
+	<array>
+		<string>@APP@/Contents/MacOS/tuxdropd</string>
+	</array>
+	<key>AssociatedBundleIdentifiers</key>
+	<string>org.tuxdrop.tuxDrop</string>
+	<key>LimitLoadToSessionType</key>
+	<string>Aqua</string>
+	<key>ProcessType</key>
+	<string>Interactive</string>
+	<key>RunAtLoad</key>
+	<true/>
+	<!-- Restarted after a crash, not after Quit or a startup error. -->
+	<key>KeepAlive</key>
+	<dict>
+		<key>Crashed</key>
+		<true/>
+	</dict>
+	<key>StandardOutPath</key>
+	<string>@LOG@</string>
+	<key>StandardErrorPath</key>
+	<string>@LOG@</string>
+</dict>
+</plist>

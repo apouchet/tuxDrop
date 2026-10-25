@@ -1,11 +1,14 @@
-//! Showing files in the file manager and copying text to the clipboard.
+//! Showing files in the file manager, copying text to the clipboard and
+//! asking the user through zenity dialogs.
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::process::Stdio;
 
 use anyhow::{Context, Result, bail};
 use tokio::io::AsyncWriteExt;
 use tokio::process::Command;
+
+use super::notifications::escape;
 
 /// Implemented by Nautilus, Dolphin, Nemo and others.
 #[zbus::proxy(
@@ -13,15 +16,21 @@ use tokio::process::Command;
     default_service = "org.freedesktop.FileManager1",
     default_path = "/org/freedesktop/FileManager1"
 )]
-pub trait FileManager {
+trait FileManager1 {
     fn show_folders(&self, uris: &[&str], startup_id: &str) -> zbus::Result<()>;
     fn show_items(&self, uris: &[&str], startup_id: &str) -> zbus::Result<()>;
 }
 
-impl FileManagerProxy<'_> {
+pub struct FileManager(FileManager1Proxy<'static>);
+
+impl FileManager {
+    pub async fn new(conn: &zbus::Connection) -> zbus::Result<Self> {
+        Ok(Self(FileManager1Proxy::new(conn).await?))
+    }
+
     /// Opens `folder`.
     pub async fn open_folder(&self, folder: &Path) {
-        if let Err(e) = self.show_folders(&[&file_uri(folder)], "").await {
+        if let Err(e) = self.0.show_folders(&[&file_uri(folder)], "").await {
             tracing::warn!("cannot open {}: {e}", folder.display());
         }
     }
@@ -30,7 +39,7 @@ impl FileManagerProxy<'_> {
     pub async fn select(&self, items: &[impl AsRef<Path>]) {
         let uris: Vec<String> = items.iter().map(|p| file_uri(p.as_ref())).collect();
         let uris: Vec<&str> = uris.iter().map(String::as_str).collect();
-        if let Err(e) = self.show_items(&uris, "").await {
+        if let Err(e) = self.0.show_items(&uris, "").await {
             tracing::warn!("cannot show received files: {e}");
         }
     }
@@ -72,6 +81,60 @@ pub async fn copy_to_clipboard(text: &str) -> Result<()> {
         bail!("{program} failed ({status})");
     }
     Ok(())
+}
+
+/// Asks for a line of text; `None` if cancelled.
+pub async fn ask_text(prompt: &str, initial: &str) -> Result<Option<String>> {
+    let output = Command::new("zenity")
+        .args(["--entry", "--title=tuxDrop"])
+        .arg(format!("--text={}", escape(prompt)))
+        .arg(format!("--entry-text={initial}"))
+        .output()
+        .await
+        .context("cannot run zenity")?;
+    Ok(output.status.success().then(|| {
+        String::from_utf8_lossy(&output.stdout)
+            .trim_end_matches('\n')
+            .to_owned()
+    }))
+}
+
+/// Lets the user pick one of `labels`; its index, `None` if cancelled.
+pub async fn pick_device(prompt: &str, labels: &[String]) -> Result<Option<usize>> {
+    let output = Command::new("zenity")
+        .args([
+            "--list",
+            "--title=tuxDrop",
+            "--column=Device",
+            "--hide-header",
+        ])
+        .arg(format!("--text={}", escape(prompt)))
+        .args(labels)
+        .output()
+        .await
+        .context("cannot run zenity")?;
+    let picked = String::from_utf8_lossy(&output.stdout);
+    let picked = picked.trim_end_matches('\n');
+    Ok(labels.iter().position(|l| l == picked))
+}
+
+/// Lets the user pick files, or folders; `None` if cancelled.
+pub async fn pick_paths(title: &str, folders: bool) -> Result<Option<Vec<PathBuf>>> {
+    let mut command = Command::new("zenity");
+    command
+        .args(["--file-selection", "--multiple", "--separator=\n"])
+        .arg(format!("--title={title}"));
+    if folders {
+        command.arg("--directory");
+    }
+    let output = command.output().await.context("cannot run zenity")?;
+    Ok(output.status.success().then(|| {
+        String::from_utf8_lossy(&output.stdout)
+            .lines()
+            .filter(|l| !l.is_empty())
+            .map(PathBuf::from)
+            .collect()
+    }))
 }
 
 #[cfg(test)]

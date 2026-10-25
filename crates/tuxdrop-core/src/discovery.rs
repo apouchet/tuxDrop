@@ -7,7 +7,6 @@
 //! address of the local networks ([`sweep`]).
 
 use std::net::{IpAddr, Ipv4Addr, SocketAddr, SocketAddrV4};
-use std::path::Path;
 use std::sync::Arc;
 
 use anyhow::Result;
@@ -19,6 +18,7 @@ use crate::client;
 use crate::identity::{Identity, same_fingerprint};
 use crate::names::Names;
 use crate::proto::{API_PREFIX, Announcement, DEFAULT_PORT, DeviceInfo, MULTICAST_ADDR, Protocol};
+use crate::sys;
 
 #[derive(Clone, Debug)]
 pub struct Peer {
@@ -121,6 +121,8 @@ impl Discovery {
     pub fn bind(port: u16, identity: Arc<Identity>, me: DeviceInfo) -> Result<Self> {
         let socket = Socket::new(Domain::IPV4, Type::DGRAM, Some(socket2::Protocol::UDP))?;
         socket.set_reuse_address(true)?;
+        // Windows shares a UDP port with SO_REUSEADDR alone.
+        #[cfg(unix)]
         socket.set_reuse_port(true)?;
         socket.set_nonblocking(true)?;
         socket.bind(&SocketAddrV4::new(Ipv4Addr::UNSPECIFIED, port).into())?;
@@ -227,12 +229,9 @@ pub fn sweep(me: &DeviceInfo, port: u16) -> Result<usize> {
         let if_addrs::IfAddr::V4(v4) = &iface.addr else {
             continue;
         };
-        // Bridges, veth, VPN tunnels… have no backing device.
-        let physical = Path::new("/sys/class/net")
-            .join(&iface.name)
-            .join("device")
-            .exists();
-        if !physical || v4.ip.is_loopback() || v4.ip.is_link_local() {
+        // Bridges, veth, VPN tunnels… are not swept.
+        if !sys::is_physical_interface(&iface.name) || v4.ip.is_loopback() || v4.ip.is_link_local()
+        {
             continue;
         }
         let targets = sweep_targets(v4.ip, v4.prefixlen);

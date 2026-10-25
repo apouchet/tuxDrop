@@ -17,7 +17,7 @@ the same network.
   [recv](#tuxdrop-recv) · [status](#tuxdrop-status) · [accept / reject](#tuxdrop-accept--tuxdrop-reject) ·
   [trust / untrust / trusted](#tuxdrop-trust--untrust--trusted) · [name](#tuxdrop-name)
 - [tuxdropd](#tuxdropd): [tray icon](#tray-icon) · [file manager menu](#file-manager-menu) ·
-  [D-Bus API](#d-bus-api)
+  [D-Bus API](#d-bus-api) · [macOS](#macos) · [control socket](#control-socket-macos-windows)
 - [Files and configuration](#files-and-configuration)
 - [Troubleshooting](#troubleshooting)
 
@@ -168,7 +168,18 @@ transfer complete
 | `receiver answered 507 Insufficient Storage` | not enough free space on the receiver |
 | `peer certificate does not match its fingerprint` | the device is not who it announced; nothing was sent |
 
-### `tuxdrop recv`
+### `tuxdrop share`
+
+```
+tuxdrop share <PATHS>...
+```
+
+Asks the running daemon to show a dialog listing the nearby devices (zenity on Linux, a macOS
+list), then sends the files or folders to the one picked, as **Send files…** in the tray would.
+It returns at once; the daemon reports progress and errors. If no device is known, the daemon
+looks for 4 seconds before showing "No device found". On Linux it can serve a file manager other
+than Nautilus (a Dolphin or Thunar custom action).
+
 
 ```
 tuxdrop recv
@@ -355,9 +366,14 @@ While a request waits for your answer, the icon asks for attention and the menu 
 "… wants to send N file(s)" followed by **Accept**, **Decline** and, for verified senders,
 **Always accept from this device**, as in the notification.
 
+During a transfer, in either direction, the menu shows "Receiving from … · 45%" or "Sending
+to … · 45%" with a **Cancel** entry, refreshed like the notification.
+
 Each device is shown as its alias, or `Name (alias)` once named, followed by `· trusted` when
 it is trusted. Its submenu has:
 - **Fingerprint …**: the first 16 characters, to compare with `tuxdrop info` on the device.
+- **Send files…** / **Send folder…**: picks files or folders (zenity) and sends them, as the
+  [file manager menu](#file-manager-menu) does.
 - **Rename…**: opens a dialog (zenity) to give it a [local name](#tuxdrop-name). Leaving the
   field empty, or typing its alias, removes the name. Without zenity, a notification says so.
 - **Trusted (accept without asking)**: checkbox, same as `tuxdrop trust` / `untrust`. It has no
@@ -382,6 +398,20 @@ missing appears when the menu is opened again.
 The extension is `/usr/share/nautilus-python/extensions/tuxdrop.py` and needs nautilus-python.
 After installing or updating it, restart Files with `nautilus -q`.
 
+**Finder (macOS)**: right-click files or folders, then **Share > tuxDrop** (also in the Share
+button of Finder and of apps such as Preview). A window lists the devices known to the daemon,
+refreshed every second after asking nearby devices to answer; pick one and click **Send** (or
+double-click it). The daemon then sends as for `Send`, with its usual notifications.
+
+- **"tuxDrop is not running"**: open tuxDrop from Applications.
+- Not in the menu: **Share > Edit Extensions…** (or **System Settings > General > Login Items &
+  Extensions > Sharing**) and enable tuxDrop.
+
+The entry is the app extension `tuxDrop.app/Contents/PlugIns/tuxDropShare.appex`
+(`packaging/macos/share/`). Like every app extension it is sandboxed; its entitlements only let it
+read `~/Library/Application Support/tuxdrop/control-socket`, where the daemon writes the path of
+its control socket, and connect to that socket.
+
 ### D-Bus API
 
 The daemon exposes `org.tuxdrop.Daemon1` at `/org/tuxdrop/Daemon` on the session bus. `tuxdrop
@@ -396,6 +426,7 @@ status/accept/reject` use it, and so can scripts or a future graphical interface
 | `Reject(id)` | `s` → | decline a pending request |
 | `Send(target, paths)` | `sas` → `s` | start sending in the background; returns a transfer id |
 | `Cancel(id)` | `s` → | cancel a transfer in progress: incoming (request id) or outgoing (id returned by `Send`) |
+| `Share(paths)` | `as` → | ask in a dialog which nearby device to send `paths` (absolute) to, then send them |
 | signal `IncomingRequest` | `ssbut` | id, alias, verified, file count, total bytes |
 | signal `Progress` | `sstt` | id, file name, bytes done, file size |
 | signal `TransferFinished` | `ss` | id, `completed` / `cancelled` / `failed: <reason>` |
@@ -415,6 +446,50 @@ busctl --user call org.tuxdrop.Daemon /org/tuxdrop/Daemon org.tuxdrop.Daemon1 \
 busctl --user monitor org.tuxdrop.Daemon      # watch the signals
 ```
 
+### macOS
+
+On macOS, tuxdropd is the `tuxDrop.app` application (see the README for installing it). It
+starts at login through the LaunchAgent `org.tuxdrop.tuxdropd`:
+
+```sh
+launchctl kickstart -k gui/$(id -u)/org.tuxdrop.tuxdropd   # restart, e.g. after editing config.toml
+launchctl bootout gui/$(id -u)/org.tuxdrop.tuxdropd        # stop until the next login
+tail -f ~/Library/Logs/tuxdrop.log                         # logs
+```
+
+It does the same as on Linux, with these differences:
+- **Menu bar icon** instead of the tray icon, with the same menu plus **Quit tuxDrop**. The icon
+  shows a dot while a request waits. Pointing at it asks nearby devices to answer (at most every
+  5 seconds) and reloads names and trust.
+- **Requests** open a dialog with **Decline**, **Always Accept** (verified senders) and
+  **Accept**. Answering from the menu bar or with `tuxdrop accept` closes it.
+- **Notifications** are banners without buttons: transfer started (trusted sender or sent from
+  the menu), finished, cancelled or failed. Progress is in the menu bar menu.
+- **Text messages** open a dialog with **Copy** (pbcopy).
+- **Send Files…**, **Send Folder…** and **Rename…** use the standard macOS dialogs.
+- If the daemon cannot start (port taken, another tuxdropd running), an alert says why.
+- **Open at Login** (menu bar menu, when run from `tuxDrop.app`) writes or removes the same
+  LaunchAgent as `scripts/install-macos.sh`; the change applies from the next login.
+- On startup the app registers its Share menu extension and enables it, unless it was turned
+  off in **Edit Extensions…**: an app copied from the disk image needs nothing else.
+
+### Control socket (macOS, Windows)
+
+Without a session bus, the daemon serves the same requests as the D-Bus API on a local socket
+private to the user: on macOS `tuxdropd-<hash>.sock` in the per-user temporary folder
+(`getconf DARWIN_USER_TEMP_DIR`), on Windows the named pipe `\\.\pipe\tuxdrop-<user>`. Each
+connection carries one JSON request and one JSON answer, each on one line:
+
+```sh
+sock=$(ls "$(getconf DARWIN_USER_TEMP_DIR)"tuxdropd-*.sock)
+echo '{"method":"list_pending"}' | nc -U "$sock"
+echo '{"method":"send","target":"alpha","paths":["/Users/me/report.pdf"]}' | nc -U "$sock"
+```
+
+Methods: `list_peers`, `announce`, `list_pending`, `accept` / `reject` / `cancel` (with `id`),
+`send` (with `target` and `paths`), `share` (with `paths`). Answers: `"done"`, `{"peers":[…]}`, `{"pending":[…]}`,
+`{"id":"…"}` or `{"error":"…"}`. There are no signals.
+
 ---
 
 ## Files and configuration
@@ -422,12 +497,15 @@ busctl --user monitor org.tuxdrop.Daemon      # watch the signals
 | Path | Content |
 |---|---|
 | `~/.config/tuxdrop/config.toml` | settings (optional) |
+| *(macOS)* `~/Library/Application Support/tuxdrop/` | `config.toml`, identity, `trusted.json` and `names.json` together |
 | `~/.local/share/tuxdrop/cert.pem`, `key.pem` | device identity; the key is private (mode 0600). Deleting them creates a new fingerprint, and devices that trusted you must trust you again. |
 | `~/.local/share/tuxdrop/trusted.json` | trusted devices |
 | `~/.local/share/tuxdrop/names.json` | names you gave to devices (`tuxdrop name`, tray **Rename…**) |
 | `~/Downloads/tuxDrop/` | default download folder (follows `XDG_DOWNLOAD_DIR`) |
 | `/usr/lib/systemd/user/tuxdropd.service` | user service (packages) |
+| *(macOS)* `/Applications/tuxDrop.app`, `~/Library/LaunchAgents/org.tuxdrop.tuxdropd.plist` | application and its start at login (`scripts/install-macos.sh`) |
 | `/usr/share/nautilus-python/extensions/tuxdrop.py` | Files right-click menu (packages) |
+| *(macOS)* `~/Library/Application Support/tuxdrop/control-socket` | path of the daemon's control socket, for the Share menu extension (while the daemon runs) |
 | `/etc/ufw/applications.d/tuxdrop`, `/usr/lib/firewalld/services/tuxdrop.xml` | firewall definitions, not enabled by default |
 
 `config.toml`: every key is optional, and an unknown key is an error.

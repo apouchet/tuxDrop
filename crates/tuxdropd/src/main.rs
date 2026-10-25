@@ -1,32 +1,29 @@
 //! tuxdropd: receives in the background, asks through desktop notifications
-//! and exposes `org.tuxdrop.Daemon1` on the session bus.
+//! and the tray icon, and serves the control API ([`api`]):
+//! `org.tuxdrop.Daemon1` on the session bus on Linux, a local socket on macOS
+//! and Windows. Everything specific to a desktop lives in [`platform`].
 
-mod desktop;
+mod api;
 mod notifications;
+mod platform;
 mod tray;
 
 use std::collections::HashMap;
-use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result};
-use futures_util::StreamExt;
 use tokio::sync::{Notify, mpsc, oneshot};
 use tokio_util::sync::CancellationToken;
-use tuxdrop_core::client::{self, SendEvent, SendOutcome, SendRequest};
+use tuxdrop_core::client;
 use tuxdrop_core::discovery::Peer;
 use tuxdrop_core::receive::{IncomingRequest, Outcome, ReceiveEvent, Receiver};
-use tuxdrop_core::{DECISION_TIMEOUT, Node, SWEEP_DELAY, random_id};
-use zbus::fdo;
-use zbus::object_server::SignalEmitter;
+use tuxdrop_core::{DECISION_TIMEOUT, Node, SWEEP_DELAY};
 
-use crate::desktop::FileManagerProxy;
-use crate::notifications::{ACCEPT, ALWAYS, CANCEL, COPY, NotificationsProxy, OPEN};
+use crate::notifications::{ACCEPT, ALWAYS, COPY, NotificationEvent, OPEN};
+use crate::platform::{FileManager, Notifier, Signals};
 
-const BUS_NAME: &str = "org.tuxdrop.Daemon";
-const OBJECT_PATH: &str = "/org/tuxdrop/Daemon";
 const PEER_TTL: Duration = Duration::from_secs(300);
 /// A transfer notification is refreshed when its percentage grew this much,
 /// and at most once per `PROGRESS_INTERVAL`.
@@ -86,11 +83,12 @@ struct Shared {
     /// By notification id.
     followups: Mutex<HashMap<u32, Followup>>,
     /// Signalled when what the tray shows changes: a new device, a renamed
-    /// one, a request pending or answered.
+    /// one, a request pending or answered, a transfer's progress.
     tray_changed: Notify,
-    notifier: NotificationsProxy<'static>,
-    file_manager: FileManagerProxy<'static>,
-    emitter: SignalEmitter<'static>,
+    notifier: Notifier,
+    file_manager: FileManager,
+    /// Tells API clients about requests and transfers.
+    signals: Signals,
 }
 
 impl Shared {
@@ -124,12 +122,11 @@ impl Shared {
         }
         if pending.reply.send(accepted).is_err() && accepted {
             // Answered too late: the core already declined.
-            let stale = self.transfers.lock().unwrap().remove(id);
-            if let Some(t) = stale {
-                let _ = self.notifier.close_notification(t.notification).await;
+            if let Some(t) = self.end_transfer(id) {
+                self.notifier.close(t.notification).await;
             }
         } else if let (false, Some(n)) = (accepted, pending.notification) {
-            let _ = self.notifier.close_notification(n).await;
+            self.notifier.close(n).await;
         }
         true
     }
@@ -159,13 +156,18 @@ impl Shared {
                 cancelled_here: false,
             },
         );
-        let n = self
-            .notifier
-            .show(replaces, &summary, body, &[CANCEL, "Cancel"], Some(0))
-            .await;
+        self.tray_changed.notify_one();
+        let n = self.notifier.transfer(replaces, &summary, body, 0).await;
         if let Some(t) = self.transfers.lock().unwrap().get_mut(id) {
             t.notification = n;
         }
+    }
+
+    /// Stops tracking a transfer that ended.
+    fn end_transfer(&self, id: &str) -> Option<Transfer> {
+        let transfer = self.transfers.lock().unwrap().remove(id);
+        self.tray_changed.notify_one();
+        transfer
     }
 
     /// Records that `done` bytes of `file_name` were transferred and
@@ -186,16 +188,11 @@ impl Shared {
             t.shown_at = Instant::now();
             (t.notification, t.summary.clone(), percent)
         };
+        self.tray_changed.notify_one();
         let body = format!("{percent}% · {file_name}");
         let n = self
             .notifier
-            .show(
-                replaces,
-                &summary,
-                &body,
-                &[CANCEL, "Cancel"],
-                Some(percent),
-            )
+            .transfer(replaces, &summary, &body, percent)
             .await;
         if let Some(t) = self.transfers.lock().unwrap().get_mut(id) {
             t.notification = n;
@@ -224,14 +221,14 @@ impl Shared {
     /// Shows how something ended, replacing notification `replaces` unless
     /// it is 0; `followup` is what its button does.
     async fn conclude(&self, replaces: u32, summary: &str, body: &str, followup: Option<Followup>) {
-        let actions: &[&str] = match &followup {
-            Some(Followup::Select(_)) => &[OPEN, "Open folder"],
-            Some(Followup::Copy(_)) => &[COPY, "Copy"],
-            None => &[],
+        let action = match &followup {
+            Some(Followup::Select(_)) => Some([OPEN, "Open folder"]),
+            Some(Followup::Copy(_)) => Some([COPY, "Copy"]),
+            None => None,
         };
         let n = self
             .notifier
-            .show(replaces, summary, body, actions, None)
+            .conclude(replaces, summary, body, action)
             .await;
         if let (Some(followup), true) = (followup, n != 0) {
             self.followups.lock().unwrap().insert(n, followup);
@@ -251,7 +248,7 @@ impl Shared {
             self.decide(&id, key).await;
             return;
         }
-        if key == CANCEL {
+        if key == notifications::CANCEL {
             let transfer = self
                 .transfers
                 .lock()
@@ -268,15 +265,10 @@ impl Shared {
         match followup {
             Some(Followup::Select(items)) => self.file_manager.select(&items).await,
             Some(Followup::Copy(text)) => {
-                if let Err(e) = desktop::copy_to_clipboard(&text).await {
+                if let Err(e) = platform::copy_to_clipboard(&text).await {
                     tracing::warn!("cannot copy the message: {e:#}");
                     self.notifier
-                        .inform(
-                            0,
-                            "Cannot copy the message",
-                            "Copying needs wl-clipboard (sudo apt install wl-clipboard / \
-                             sudo dnf install wl-clipboard)",
-                        )
+                        .inform(0, "Cannot copy the message", platform::CLIPBOARD_HELP)
                         .await;
                 }
             }
@@ -354,231 +346,28 @@ fn top_level(download_dir: &Path, saved: &[PathBuf]) -> Vec<PathBuf> {
     items
 }
 
-struct Api {
-    shared: Arc<Shared>,
-}
-
-#[zbus::interface(name = "org.tuxdrop.Daemon1")]
-impl Api {
-    /// (alias, local name or "", address, fingerprint, "https"/"http",
-    /// seconds since last seen) for devices seen in the last 5 minutes.
-    fn list_peers(&self) -> Vec<(String, String, String, String, String, u32)> {
-        let names = Node::name_store().load();
-        self.shared
-            .live_peers()
-            .into_iter()
-            .map(|(p, seen)| {
-                let name = names.get(&p.info.fingerprint).unwrap_or("").to_owned();
-                let addr = SocketAddr::new(p.addr, p.port).to_string();
-                let age = seen.elapsed().as_secs() as u32;
-                let protocol = p.protocol.scheme().to_owned();
-                (p.info.alias, name, addr, p.info.fingerprint, protocol, age)
-            })
-            .collect()
-    }
-
-    /// Asks nearby devices to answer; they appear in `ListPeers` within a
-    /// couple of seconds.
-    fn announce(&self) {
-        self.shared.announce();
-    }
-
-    /// (id, sender alias, identity verified, file count, total bytes)
-    fn list_pending(&self) -> Vec<(String, String, bool, u32, u64)> {
-        self.shared
-            .pending
-            .lock()
-            .unwrap()
-            .iter()
-            .map(|(id, p)| {
-                let r = &p.request;
-                (
-                    id.clone(),
-                    r.sender.alias.clone(),
-                    r.is_verified(),
-                    r.files.len() as u32,
-                    r.total_size,
-                )
-            })
-            .collect()
-    }
-
-    async fn accept(&self, id: &str) -> fdo::Result<()> {
-        self.choose(id, ACCEPT).await
-    }
-
-    async fn reject(&self, id: &str) -> fdo::Result<()> {
-        self.choose(id, notifications::REJECT).await
-    }
-
-    /// Cancels a transfer in progress, incoming (request id) or outgoing
-    /// (id returned by `Send`).
-    async fn cancel(&self, id: &str) -> fdo::Result<()> {
-        if self.shared.cancel(id).await {
-            Ok(())
-        } else {
-            Err(fdo::Error::InvalidArgs(format!(
-                "no transfer {id} in progress"
-            )))
-        }
-    }
-
-    /// Starts sending in the background; returns the transfer id used by
-    /// the `Progress` and `TransferFinished` signals.
-    async fn send(&self, target: &str, paths: Vec<String>) -> fdo::Result<String> {
-        let paths: Vec<PathBuf> = paths.into_iter().map(PathBuf::from).collect();
-        let files = match client::collect_files(&paths) {
-            Ok(files) => files,
-            Err(e) => return Err(self.send_failed(fdo::Error::InvalidArgs, e).await),
-        };
-        let peer = match self.shared.find_peer(target).await {
-            Ok(peer) => peer,
-            Err(e) => return Err(self.send_failed(fdo::Error::Failed, e).await),
-        };
-        let id = random_id();
-        let shared = self.shared.clone();
-        let transfer_id = id.clone();
-        tokio::spawn(async move {
-            let alias = peer.info.alias.clone();
-            let count = format!("{} file(s)", files.len());
-            let cancel = CancellationToken::new();
-            shared
-                .start_transfer(
-                    &transfer_id,
-                    0,
-                    format!("Sending to {alias}"),
-                    &format!("{count}, waiting for {alias} to accept"),
-                    files.iter().map(|f| f.meta.size).sum(),
-                    Some(cancel.clone()),
-                )
-                .await;
-            let (tx, mut rx) = mpsc::unbounded_channel();
-            let progress: client::ProgressFn = Arc::new(move |e| {
-                let _ = tx.send(e);
-            });
-            let req = SendRequest {
-                identity: &shared.node.identity,
-                me: &shared.node.me,
-                peer: &peer,
-                files,
-                pin: None,
-            };
-            let transfer = client::send(req, progress, cancel.clone());
-            tokio::pin!(transfer);
-            let mut last_percent = u64::MAX;
-            let result = loop {
-                tokio::select! {
-                    r = &mut transfer => break r,
-                    // Matching `Progress` in the pattern would disable this
-                    // branch at the first other event until the end.
-                    Some(event) = rx.recv() => {
-                        let SendEvent::Progress { file_name, sent, total } = event else {
-                            continue;
-                        };
-                        let percent = (sent * 100).checked_div(total).unwrap_or(100);
-                        if percent != last_percent {
-                            last_percent = percent;
-                            let _ = Api::progress(&shared.emitter, &transfer_id, &file_name, sent, total).await;
-                        }
-                        shared.transfer_progress(&transfer_id, &file_name, sent).await;
-                    }
-                }
-            };
-            let notification = shared
-                .transfers
-                .lock()
-                .unwrap()
-                .remove(&transfer_id)
-                .map_or(0, |t| t.notification);
-            let (summary, body, outcome) = match result {
-                Ok(SendOutcome::Completed | SendOutcome::NothingToSend) => {
-                    (format!("Sent to {alias}"), count, "completed".to_owned())
-                }
-                Err(_) if cancel.is_cancelled() => (
-                    format!("Sending to {alias} cancelled"),
-                    count,
-                    "cancelled".to_owned(),
-                ),
-                Err(e) => (
-                    format!("Sending to {alias} failed"),
-                    format!("{e:#}"),
-                    format!("failed: {e:#}"),
-                ),
-            };
-            shared.conclude(notification, &summary, &body, None).await;
-            let _ = Api::transfer_finished(&shared.emitter, &transfer_id, &outcome).await;
-        });
-        Ok(id)
-    }
-
-    #[zbus(signal)]
-    async fn incoming_request(
-        emitter: &SignalEmitter<'_>,
-        id: &str,
-        alias: &str,
-        verified: bool,
-        files: u32,
-        size: u64,
-    ) -> zbus::Result<()>;
-
-    #[zbus(signal)]
-    async fn progress(
-        emitter: &SignalEmitter<'_>,
-        id: &str,
-        file_name: &str,
-        done: u64,
-        total: u64,
-    ) -> zbus::Result<()>;
-
-    /// `outcome`: "completed", "cancelled" or "failed: <reason>".
-    #[zbus(signal)]
-    async fn transfer_finished(
-        emitter: &SignalEmitter<'_>,
-        id: &str,
-        outcome: &str,
-    ) -> zbus::Result<()>;
-}
-
-impl Api {
-    async fn choose(&self, id: &str, choice: &str) -> fdo::Result<()> {
-        if self.shared.decide(id, choice).await {
-            Ok(())
-        } else {
-            Err(fdo::Error::InvalidArgs(format!("no pending transfer {id}")))
-        }
-    }
-
-    /// Also shows `e` as a notification: callers such as the file manager
-    /// menu have no other way to report it.
-    async fn send_failed(&self, kind: fn(String) -> fdo::Error, e: anyhow::Error) -> fdo::Error {
-        let message = format!("{e:#}");
-        self.shared
-            .notifier
-            .inform(0, "Sending failed", &message)
-            .await;
-        kind(message)
-    }
-}
-
-#[tokio::main]
-async fn main() -> Result<()> {
+fn main() -> Result<()> {
     tracing_subscriber::fmt()
         .with_env_filter(
             tracing_subscriber::EnvFilter::try_from_default_env().unwrap_or_else(|_| "info".into()),
         )
         .init();
+    platform::run_main(run())
+}
 
+async fn run() -> Result<()> {
     let node = Node::load()?;
     let (peers_tx, mut peers_rx) = mpsc::channel(64);
     let (receiver, mut events) = node.start_receiver(peers_tx.clone())?;
     node.start_discovery(peers_tx)?;
 
-    let conn = zbus::Connection::session()
-        .await
-        .context("cannot reach the D-Bus session bus (run tuxdropd inside a user session)")?;
-    let notifier = NotificationsProxy::new(&conn).await?;
-    let mut actions = notifier.receive_action_invoked().await?;
-    let mut closed = notifier.receive_notification_closed().await?;
+    let platform::Session {
+        notifier,
+        file_manager,
+        signals,
+        events: mut notification_events,
+        api,
+    } = platform::Session::start().await?;
     tracing::info!(
         "receiving as {:?} ({}) into {}",
         node.me.alias,
@@ -594,20 +383,12 @@ async fn main() -> Result<()> {
         followups: Mutex::default(),
         tray_changed: Notify::new(),
         notifier,
-        file_manager: FileManagerProxy::new(&conn).await?,
-        emitter: SignalEmitter::new(&conn, OBJECT_PATH)?,
+        file_manager,
+        signals,
     });
-    conn.object_server()
-        .at(
-            OBJECT_PATH,
-            Api {
-                shared: shared.clone(),
-            },
-        )
-        .await?;
-    conn.request_name(BUS_NAME)
+    api.serve(shared.clone())
         .await
-        .context("another tuxdropd already owns the bus name")?;
+        .context("starting the control API")?;
 
     let peers = shared.clone();
     tokio::spawn(async move {
@@ -621,26 +402,18 @@ async fn main() -> Result<()> {
             }
         }
     });
-    tokio::spawn(tray::run(shared.clone()));
+    tokio::spawn(platform::tray::run(shared.clone()));
 
-    // One task, actions first: servers close a notification right after its
+    // One task, in order: servers close a notification right after its
     // button is clicked, and the follow-up must not be dropped before it runs.
-    let on_signal = shared.clone();
+    let on_event = shared.clone();
     tokio::spawn(async move {
-        loop {
-            tokio::select! {
-                biased;
-                Some(signal) = actions.next() => {
-                    if let Ok(args) = signal.args() {
-                        on_signal.on_action(args.id, &args.action_key).await;
-                    }
+        while let Some(event) = notification_events.recv().await {
+            match event {
+                NotificationEvent::Action { id, key } => on_event.on_action(id, &key).await,
+                NotificationEvent::Closed { id } => {
+                    on_event.followups.lock().unwrap().remove(&id);
                 }
-                Some(signal) = closed.next() => {
-                    if let Ok(args) = signal.args() {
-                        on_signal.followups.lock().unwrap().remove(&args.id);
-                    }
-                }
-                else => break,
             }
         }
     });
@@ -677,15 +450,16 @@ async fn handle(shared: &Arc<Shared>, event: ReceiveEvent) {
             if !verified {
                 body.push("Sender identity not verified".to_owned());
             }
-            let _ = Api::incoming_request(
-                &shared.emitter,
-                &id,
-                &request.sender.alias,
-                verified,
-                request.files.len() as u32,
-                request.total_size,
-            )
-            .await;
+            shared
+                .signals
+                .incoming_request(
+                    &id,
+                    &request.sender.alias,
+                    verified,
+                    request.files.len() as u32,
+                    request.total_size,
+                )
+                .await;
             shared.pending.lock().unwrap().insert(
                 id.clone(),
                 Pending {
@@ -717,7 +491,7 @@ async fn handle(shared: &Arc<Shared>, event: ReceiveEvent) {
                 if let Some(p) = expired {
                     shared.tray_changed.notify_one();
                     if let Some(n) = p.notification {
-                        let _ = shared.notifier.close_notification(n).await;
+                        shared.notifier.close(n).await;
                     }
                 }
             });
@@ -755,7 +529,10 @@ async fn handle(shared: &Arc<Shared>, event: ReceiveEvent) {
             received,
             total,
         } => {
-            let _ = Api::progress(&shared.emitter, &session_id, &file_name, received, total).await;
+            shared
+                .signals
+                .progress(&session_id, &file_name, received, total)
+                .await;
             shared
                 .transfer_progress(&session_id, &file_name, received)
                 .await;
@@ -770,7 +547,7 @@ async fn handle(shared: &Arc<Shared>, event: ReceiveEvent) {
             session_id,
             outcome,
         } => {
-            let transfer = shared.transfers.lock().unwrap().remove(&session_id);
+            let transfer = shared.end_transfer(&session_id);
             let notification = transfer.as_ref().map_or(0, |t| t.notification);
             let download_dir = &shared.node.config.download_dir;
             let (summary, body, signal, followup) = match &outcome {
@@ -810,7 +587,7 @@ async fn handle(shared: &Arc<Shared>, event: ReceiveEvent) {
             shared
                 .conclude(notification, summary, &body, followup)
                 .await;
-            let _ = Api::transfer_finished(&shared.emitter, &session_id, &signal).await;
+            shared.signals.transfer_finished(&session_id, &signal).await;
         }
     }
 }

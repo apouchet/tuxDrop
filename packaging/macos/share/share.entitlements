@@ -1,0 +1,19 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<!-- App extensions must be sandboxed. -->
+	<key>com.apple.security.app-sandbox</key>
+	<true/>
+	<!-- The socket path written by tuxdropd (crates/tuxdrop-core/src/ipc.rs). -->
+	<key>com.apple.security.temporary-exception.files.home-relative-path.read-only</key>
+	<array>
+		<string>/Library/Application Support/tuxdrop/control-socket</string>
+	</array>
+	<!-- tuxdropd's control socket, in the user's temporary folder. -->
+	<key>com.apple.security.temporary-exception.sbpl</key>
+	<array>
+		<string>(allow network-outbound (remote unix-socket (regex #"/tuxdropd-[0-9a-f]+\.sock$")))</string>
+	</array>
+</dict>
+</plist>

@@ -5,10 +5,12 @@ pub mod client;
 pub mod config;
 pub mod discovery;
 pub mod identity;
+pub mod ipc;
 pub mod names;
 pub mod proto;
 pub mod receive;
 pub mod server;
+pub mod sys;
 pub mod tls;
 pub mod trust;
 
@@ -45,7 +47,7 @@ pub fn local_device_info(alias: &str, fingerprint: &str, port: u16) -> DeviceInf
     DeviceInfo {
         alias: alias.to_owned(),
         version: PROTOCOL_VERSION.to_owned(),
-        device_model: Some("Linux".to_owned()),
+        device_model: Some(sys::device_model().to_owned()),
         device_type: Some(DeviceType::Desktop),
         fingerprint: fingerprint.to_owned(),
         port: Some(port),

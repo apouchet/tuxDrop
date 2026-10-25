@@ -64,6 +64,22 @@ Plan : `~/.claude/plans/j-aimerais-cree-un-programme-purring-acorn.md`
 - [x] Vérifié en conteneurs (faux serveur de notifications + FileManager1) Ubuntu 24.04 → Fedora 44 ; tests core 12/12
 - [ ] Validation sur ton bureau : rendu GNOME des mises à jour de progression, Copy avec wl-copy — **à faire par toi**
 
+## macOS (et Windows préparé) — 2026-10-25
+- [x] Cœur portable : `sys.rs` (nom de l'ordinateur via `scutil`, interfaces physiques `en*`, renommage sans écrasement `RENAME_EXCL`, espace libre), `deviceModel` = OS réel
+- [x] Correctif : l'expéditeur envoie `cancel` avant d'abandonner l'upload (le test `sender_cancel_cleans_partial_file` échouait sur macOS : le receveur voyait l'upload coupé avant l'annulation)
+- [x] Démon découpé : logique commune (`main.rs`, `api.rs`, `tray.rs`) + `platform/freedesktop` (Linux, inchangé fonctionnellement) et `platform/native` (macOS, Windows)
+- [x] macOS : icône de barre des menus (tray-icon), dialogues AppleScript (demande, message + Copy, renommer, choisir fichiers), bannières, Finder, pbcopy
+- [x] CLI ↔ démon hors D-Bus : socket local JSON (`ipc.rs`), dans `DARWIN_USER_TEMP_DIR` (limite de 104 octets des chemins de socket)
+- [x] Linux et macOS : menu « Send files… / Send folder… » par appareil, transferts en cours + Cancel dans le menu
+- [x] Menu Partager du Finder : extension `tuxDropShare.appex` (Swift, `packaging/macos/share/`), fenêtre listant les appareils + Send ; sandboxée, elle lit le chemin du socket dans `control-socket` (écrit par le démon) ; icône de l'app générée (`make-icon.swift`)
+- [x] `tuxdrop share` : le démon demande l'appareil (liste macOS / zenity) puis envoie ; méthode D-Bus `Share(as)` et `share` sur le socket (utile pour Dolphin/Thunar)
+- [x] Image disque `.dmg` (app + lien Applications) par `scripts/package-macos.sh`, signature Developer ID + notarisation optionnelles (`CODESIGN_IDENTITY`, `NOTARY_PROFILE`, non testées faute de certificat) ; menu « Open at Login » (LaunchAgent) et enregistrement de l'extension Partager au lancement, pour une installation par glisser-déposer
+- [x] `tuxDrop.app` + LaunchAgent (`scripts/package-macos.sh`, `scripts/install-macos.sh`)
+- [x] Vérifié sur macOS : tests 34/34, démon + CLI isolés (status, envoi approuvé / non approuvé + accept CLI fermant la dialog, Send via socket), balayage sur en0
+- [x] Vérifié Linux : clippy + tests + build release dans `rust:1.90-bookworm` ; Windows : `cargo check`/clippy en cible croisée
+- [ ] À faire par toi : `scripts/install-macos.sh`, autorisations Réseau local / Téléchargements, échange réel avec un téléphone ou le PC Linux
+- [ ] Windows : notifications toast, dialogues, presse-papiers, démarrage auto, menu Explorer (liste dans `platform/native/windows.rs`)
+
 ## M5 — AirDrop natif via OWL (exploratoire)
 - [x] État des lieux et plan : `docs/airdrop.md` (branche `airdrop`), **en attente de validation**
 

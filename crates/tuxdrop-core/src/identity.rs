@@ -2,8 +2,6 @@
 //! LocalSend fingerprint.
 
 use std::fs;
-use std::io::Write;
-use std::os::unix::fs::OpenOptionsExt;
 use std::path::Path;
 
 use anyhow::{Context, Result};
@@ -35,13 +33,7 @@ impl Identity {
             fs::create_dir_all(dir).with_context(|| format!("creating {}", dir.display()))?;
             let generated = rcgen::generate_simple_self_signed(vec!["tuxdrop".to_string()])?;
             fs::write(&cert_path, generated.cert.pem())?;
-            fs::OpenOptions::new()
-                .write(true)
-                .create(true)
-                .truncate(true)
-                .mode(0o600)
-                .open(&key_path)?
-                .write_all(generated.key_pair.serialize_pem().as_bytes())?;
+            crate::sys::write_private(&key_path, generated.key_pair.serialize_pem().as_bytes())?;
         }
         let cert = rustls_pemfile::certs(&mut fs::read(&cert_path)?.as_slice())
             .next()
@@ -94,8 +86,11 @@ mod tests {
         let b = Identity::load_or_create(dir.path()).unwrap();
         assert_eq!(a.fingerprint, b.fingerprint);
         assert_eq!(a.fingerprint.len(), 64);
-        let mode = fs::metadata(dir.path().join("key.pem")).unwrap();
-        use std::os::unix::fs::PermissionsExt;
-        assert_eq!(mode.permissions().mode() & 0o777, 0o600);
+        #[cfg(unix)]
+        {
+            let mode = fs::metadata(dir.path().join("key.pem")).unwrap();
+            use std::os::unix::fs::PermissionsExt;
+            assert_eq!(mode.permissions().mode() & 0o777, 0o600);
+        }
     }
 }

@@ -1,236 +1,82 @@
-//! System tray icon (StatusNotifierItem) listing nearby devices; each one
-//! has a submenu to name it and to trust it.
-//!
-//! GNOME shows it only with the AppIndicator extension; without a tray host
-//! the icon waits for one and the daemon works as before.
+//! What the tray icon's menu shows and what its entries do, whatever draws
+//! it (`platform::tray`): pending requests, transfers in progress, and the
+//! nearby devices, each with a submenu to send to it, name it and trust it.
 
 use std::sync::Arc;
 use std::time::Duration;
 
-use ksni::menu::{CheckmarkItem, StandardItem, SubMenu};
-use ksni::{MenuItem, OfflineReason, Status, TrayMethods};
-use tokio::process::Command;
 use tuxdrop_core::Node;
 use tuxdrop_core::identity::same_fingerprint;
 
-use crate::notifications::{ACCEPT, ALWAYS, REJECT, escape};
-use crate::{Shared, sender_label};
+use crate::{Shared, platform, sender_label};
 
 /// How often expired devices are dropped from the menu when no new one shows up.
 const EXPIRY_CHECK: Duration = Duration::from_secs(30);
 
 /// A nearby device as the menu shows it.
 #[derive(Clone, PartialEq)]
-struct Device {
-    fingerprint: String,
-    alias: String,
-    name: Option<String>,
+pub struct Device {
+    pub fingerprint: String,
+    pub alias: String,
+    pub name: Option<String>,
     /// `Name (alias)` or the alias.
-    label: String,
-    trusted: bool,
+    pub label: String,
+    pub trusted: bool,
 }
 
 impl Device {
-    fn menu_item(&self) -> MenuItem<Tray> {
+    /// The label, marked when the device is trusted.
+    pub fn menu_label(&self) -> String {
         let mut label = self.label.clone();
         if self.trusted {
             label.push_str("  · trusted");
         }
-        let rename = self.clone();
-        let trust = self.clone();
+        label
+    }
+
+    pub fn short_fingerprint(&self) -> String {
         let short = &self.fingerprint[..self.fingerprint.len().min(16)];
-        SubMenu {
-            // A single underscore marks a mnemonic in menu labels.
-            label: label.replace('_', "__"),
-            submenu: vec![
-                StandardItem {
-                    label: format!("Fingerprint {short}…"),
-                    enabled: false,
-                    ..Default::default()
-                }
-                .into(),
-                StandardItem {
-                    label: "Rename…".into(),
-                    icon_name: "document-edit-symbolic".into(),
-                    activate: Box::new(move |tray: &mut Tray| {
-                        tokio::spawn(rename_dialog(tray.shared.clone(), rename.clone()));
-                    }),
-                    ..Default::default()
-                }
-                .into(),
-                CheckmarkItem {
-                    label: "Trusted (accept without asking)".into(),
-                    checked: self.trusted,
-                    activate: Box::new(move |tray: &mut Tray| tray.toggle_trust(&trust)),
-                    ..Default::default()
-                }
-                .into(),
-            ],
-            ..Default::default()
-        }
-        .into()
+        format!("Fingerprint {short}…")
     }
 }
 
 /// An incoming transfer waiting for the user's decision.
 #[derive(Clone, PartialEq)]
-struct Request {
-    id: String,
-    label: String,
-    verified: bool,
+pub struct Request {
+    pub id: String,
+    pub label: String,
+    pub verified: bool,
 }
 
-impl Request {
-    fn menu_items(&self) -> Vec<MenuItem<Tray>> {
-        let mut items = vec![
-            StandardItem {
-                label: self.label.replace('_', "__"),
-                icon_name: "mail-unread-symbolic".into(),
-                enabled: false,
-                ..Default::default()
-            }
-            .into(),
-            self.choice("Accept", ACCEPT),
-            self.choice("Decline", REJECT),
-        ];
-        if self.verified {
-            items.push(self.choice("Always accept from this device", ALWAYS));
-        }
-        items
-    }
-
-    fn choice(&self, label: &str, choice: &'static str) -> MenuItem<Tray> {
-        let id = self.id.clone();
-        StandardItem {
-            label: label.into(),
-            activate: Box::new(move |tray: &mut Tray| {
-                let shared = tray.shared.clone();
-                let id = id.clone();
-                tokio::spawn(async move { shared.decide(&id, choice).await });
-            }),
-            ..Default::default()
-        }
-        .into()
-    }
+/// A transfer in progress, in either direction.
+#[derive(Clone, PartialEq)]
+pub struct Transfer {
+    pub id: String,
+    /// "Receiving from … · 45%".
+    pub label: String,
 }
 
-struct Tray {
-    shared: Arc<Shared>,
+/// Everything the menu shows.
+#[derive(Clone, Default, PartialEq)]
+pub struct Snapshot {
     /// Sorted by label.
-    devices: Vec<Device>,
-    requests: Vec<Request>,
+    pub devices: Vec<Device>,
+    pub requests: Vec<Request>,
+    pub transfers: Vec<Transfer>,
 }
 
-impl Tray {
-    fn toggle_trust(&mut self, device: &Device) {
-        let store = Node::trust_store();
-        let result = if device.trusted {
-            store.remove(&device.fingerprint).map(drop)
-        } else {
-            store.add(&device.fingerprint, &device.alias)
-        };
-        if let Err(e) = result {
-            tracing::error!("cannot update trusted devices: {e:#}");
+impl Snapshot {
+    pub fn take(shared: &Shared) -> Self {
+        Self {
+            devices: devices(shared),
+            requests: requests(shared),
+            transfers: transfers(shared),
         }
-        self.devices = devices(&self.shared);
-    }
-}
-
-impl ksni::Tray for Tray {
-    const MENU_ON_ACTIVATE: bool = true;
-
-    fn id(&self) -> String {
-        "tuxdrop".into()
-    }
-
-    fn title(&self) -> String {
-        "tuxDrop".into()
-    }
-
-    fn icon_name(&self) -> String {
-        "send-to-symbolic".into()
-    }
-
-    fn attention_icon_name(&self) -> String {
-        "mail-unread-symbolic".into()
-    }
-
-    /// Asks for attention while a transfer waits for a decision.
-    fn status(&self) -> Status {
-        if self.requests.is_empty() {
-            Status::Active
-        } else {
-            Status::NeedsAttention
-        }
-    }
-
-    /// Picks up names and trust changed from the CLI; new devices appear in
-    /// the open menu as they answer.
-    fn menu_about_to_show(&mut self) {
-        self.devices = devices(&self.shared);
-        self.shared.announce();
-    }
-
-    fn menu(&self) -> Vec<MenuItem<Self>> {
-        let mut items = Vec::new();
-        for request in &self.requests {
-            items.extend(request.menu_items());
-            items.push(MenuItem::Separator);
-        }
-        if self.devices.is_empty() {
-            items.push(
-                StandardItem {
-                    label: "No device found".into(),
-                    enabled: false,
-                    ..Default::default()
-                }
-                .into(),
-            );
-        } else {
-            items.extend(self.devices.iter().map(Device::menu_item));
-        }
-        items.push(MenuItem::Separator);
-        items.push(
-            StandardItem {
-                label: "Open received files".into(),
-                icon_name: "folder-download-symbolic".into(),
-                activate: Box::new(|tray: &mut Self| {
-                    let shared = tray.shared.clone();
-                    tokio::spawn(async move {
-                        let dir = &shared.node.config.download_dir;
-                        // The file manager shows an error for a missing folder.
-                        if let Err(e) = std::fs::create_dir_all(dir) {
-                            tracing::warn!("cannot create {}: {e}", dir.display());
-                        }
-                        shared.file_manager.open_folder(dir).await;
-                    });
-                }),
-                ..Default::default()
-            }
-            .into(),
-        );
-        items.push(
-            StandardItem {
-                label: "Refresh".into(),
-                icon_name: "view-refresh-symbolic".into(),
-                activate: Box::new(|tray: &mut Self| tray.shared.announce()),
-                ..Default::default()
-            }
-            .into(),
-        );
-        items
-    }
-
-    fn watcher_offline(&self, reason: OfflineReason) -> bool {
-        tracing::info!(
-            "no system tray ({reason:?}); on GNOME, enable the AppIndicator extension to see the icon"
-        );
-        true
     }
 }
 
 /// The devices currently known to the daemon, with their name and trust.
-fn devices(shared: &Shared) -> Vec<Device> {
+pub fn devices(shared: &Shared) -> Vec<Device> {
     let names = Node::name_store().load();
     let trusted = Node::trust_store().list().unwrap_or_else(|e| {
         tracing::warn!("trust store unreadable: {e:#}");
@@ -279,39 +125,52 @@ fn requests(shared: &Shared) -> Vec<Request> {
         .collect()
 }
 
-/// Asks for a new name with zenity; a blank one goes back to the alias.
-async fn rename_dialog(shared: Arc<Shared>, device: Device) {
-    let output = Command::new("zenity")
-        .args(["--entry", "--title=tuxDrop"])
-        .arg(format!(
-            "--text=Name for {} (empty: use its own name)",
-            escape(&device.alias)
-        ))
-        .arg(format!(
-            "--entry-text={}",
-            device.name.as_deref().unwrap_or(&device.alias)
-        ))
-        .output()
-        .await;
-    let output = match output {
-        Ok(output) => output,
+/// Transfers in progress, with the percentage last shown in notifications.
+fn transfers(shared: &Shared) -> Vec<Transfer> {
+    let mut transfers: Vec<Transfer> = shared
+        .transfers
+        .lock()
+        .unwrap()
+        .iter()
+        .map(|(id, t)| Transfer {
+            id: id.clone(),
+            label: format!("{} · {}%", t.summary, t.shown_percent),
+        })
+        .collect();
+    transfers.sort_by(|a, b| a.label.cmp(&b.label));
+    transfers
+}
+
+/// Trusts the device, or stops trusting it.
+pub fn toggle_trust(shared: &Shared, device: &Device) {
+    let store = Node::trust_store();
+    let result = if device.trusted {
+        store.remove(&device.fingerprint).map(drop)
+    } else {
+        store.add(&device.fingerprint, &device.alias)
+    };
+    if let Err(e) = result {
+        tracing::error!("cannot update trusted devices: {e:#}");
+    }
+    shared.tray_changed.notify_one();
+}
+
+/// Asks for a new name; a blank one, or the alias, goes back to the alias.
+pub async fn rename(shared: Arc<Shared>, device: Device) {
+    let prompt = format!("Name for {} (empty: use its own name)", device.alias);
+    let current = device.name.as_deref().unwrap_or(&device.alias);
+    let name = match platform::ask_text(&prompt, current).await {
+        Ok(Some(name)) => name,
+        Ok(None) => return, // cancelled
         Err(e) => {
-            tracing::warn!("cannot run zenity: {e}");
+            tracing::warn!("cannot ask for a name: {e:#}");
             shared
                 .notifier
-                .inform(
-                    0,
-                    "Cannot rename",
-                    "Renaming needs zenity (sudo apt install zenity / sudo dnf install zenity)",
-                )
+                .inform(0, "Cannot rename", platform::DIALOG_HELP)
                 .await;
             return;
         }
     };
-    if !output.status.success() {
-        return; // cancelled
-    }
-    let name = String::from_utf8_lossy(&output.stdout);
     let name = if name.trim() == device.alias {
         ""
     } else {
@@ -323,33 +182,47 @@ async fn rename_dialog(shared: Arc<Shared>, device: Device) {
     }
 }
 
-/// Shows the tray icon and keeps its device list up to date.
-pub async fn run(shared: Arc<Shared>) {
-    let tray = Tray {
-        shared: shared.clone(),
-        devices: Vec::new(),
-        requests: Vec::new(),
-    };
-    // Waits for a tray host instead of failing when the session has none yet
-    // (daemon started before the shell, extension enabled later).
-    let handle = match tray.assume_sni_available(true).spawn().await {
-        Ok(handle) => handle,
+/// Lets the user pick files (or one or more folders) and sends them to
+/// `device`; failures are reported by [`Shared::send`].
+pub async fn send_to(shared: Arc<Shared>, device: Device, folders: bool) {
+    let paths = match platform::pick_paths(&format!("Send to {}", device.label), folders).await {
+        Ok(Some(paths)) if !paths.is_empty() => paths,
+        Ok(_) => return, // cancelled
         Err(e) => {
-            tracing::warn!("cannot create the tray icon: {e}");
+            tracing::warn!("cannot ask for files: {e:#}");
+            shared
+                .notifier
+                .inform(0, "Cannot choose files", platform::DIALOG_HELP)
+                .await;
             return;
         }
     };
-    let mut shown = (Vec::new(), Vec::new());
+    let _ = shared.send(&device.fingerprint, paths).await;
+}
+
+/// Opens the download folder.
+pub async fn open_received(shared: Arc<Shared>) {
+    let dir = &shared.node.config.download_dir;
+    // The file manager shows an error for a missing folder.
+    if let Err(e) = std::fs::create_dir_all(dir) {
+        tracing::warn!("cannot create {}: {e}", dir.display());
+    }
+    shared.file_manager.open_folder(dir).await;
+}
+
+/// Calls `show` with what the menu must show each time it changes, until
+/// `show` returns false.
+pub async fn watch<F, Fut>(shared: &Shared, mut show: F)
+where
+    F: FnMut(Snapshot) -> Fut,
+    Fut: Future<Output = bool>,
+{
+    let mut shown = None;
     loop {
-        let current = (devices(&shared), requests(&shared));
-        if current != shown {
-            shown = current.clone();
-            let (devices, requests) = current;
-            let update = |tray: &mut Tray| {
-                tray.devices = devices;
-                tray.requests = requests;
-            };
-            if handle.update(update).await.is_none() {
+        let current = Snapshot::take(shared);
+        if shown.as_ref() != Some(&current) {
+            shown = Some(current.clone());
+            if !show(current).await {
                 return;
             }
         }

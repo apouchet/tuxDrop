@@ -54,6 +54,12 @@ enum Command {
         #[arg(short, long, default_value_t = 5)]
         timeout: u64,
     },
+    /// Choose the device in a dialog, then send files or folders (tuxdropd;
+    /// used by the Finder Quick Action).
+    Share {
+        #[arg(required = true)]
+        paths: Vec<PathBuf>,
+    },
     /// Receive in the foreground (when tuxdropd is not running).
     Recv,
     /// Pending incoming transfers and nearby devices known to tuxdropd.
@@ -113,6 +119,7 @@ async fn main() -> Result<()> {
             pin,
             timeout,
         } => send(&target, &paths, pin.as_deref(), timeout).await?,
+        Command::Share { paths } => daemon::share(&paths).await?,
         Command::Recv => recv().await?,
         Command::Status => daemon::status().await?,
         Command::Accept { id } => daemon::decide(&id, true).await?,

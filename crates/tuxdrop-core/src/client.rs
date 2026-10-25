@@ -215,11 +215,14 @@ pub async fn send(
             token,
             &progress,
         );
+        tokio::pin!(upload);
         let result = tokio::select! {
-            r = upload => r,
+            r = &mut upload => r,
             () = cancel.cancelled() => Err(anyhow::anyhow!("cancelled")),
         };
         if let Err(e) = result {
+            // Sent before the upload is dropped: a receiver that sees the
+            // upload cut first reports a failure instead of a cancellation.
             let _ = client
                 .post(req.peer.api_url("cancel"))
                 .query(&[("sessionId", &session.session_id)])

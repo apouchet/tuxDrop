@@ -22,6 +22,7 @@ use crate::proto::{
     DeviceInfo, FileMeta, PrepareUploadRequest, PrepareUploadResponse, UploadQuery,
 };
 use crate::random_id;
+use crate::sys::{available_space, rename_noreplace};
 use crate::trust::TrustStore;
 
 const SESSION_IDLE_TIMEOUT: Duration = Duration::from_secs(300);
@@ -660,26 +661,6 @@ fn move_unique(part: &Path, dir: &Path, name: &OsStr) -> io::Result<PathBuf> {
     ))
 }
 
-fn rename_noreplace(from: &Path, to: &Path) -> io::Result<()> {
-    use rustix::fs::{CWD, RenameFlags, renameat_with};
-    match renameat_with(CWD, from, CWD, to, RenameFlags::NOREPLACE) {
-        Ok(()) => Ok(()),
-        // Filesystems without RENAME_NOREPLACE (e.g. some FUSE mounts).
-        Err(rustix::io::Errno::INVAL) => {
-            if std::fs::symlink_metadata(to).is_ok() {
-                return Err(io::ErrorKind::AlreadyExists.into());
-            }
-            std::fs::rename(from, to)
-        }
-        Err(e) => Err(e.into()),
-    }
-}
-
-fn available_space(path: &Path) -> io::Result<u64> {
-    let st = rustix::fs::statvfs(path)?;
-    Ok(st.f_bavail.saturating_mul(st.f_frsize))
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -723,6 +704,7 @@ mod tests {
         assert!(!part.exists());
     }
 
+    #[cfg(unix)]
     #[test]
     fn ensure_dir_refuses_symlinks() {
         let dir = tempfile::tempdir().unwrap();

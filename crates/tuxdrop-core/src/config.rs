@@ -19,10 +19,7 @@ pub struct Config {
 
 impl Default for Config {
     fn default() -> Self {
-        let alias = rustix::system::uname()
-            .nodename()
-            .to_string_lossy()
-            .into_owned();
+        let alias = crate::sys::hostname();
         let download_dir = dirs::download_dir()
             .or_else(dirs::home_dir)
             .unwrap_or_else(|| PathBuf::from("."))

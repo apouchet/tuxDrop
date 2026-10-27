@@ -96,6 +96,7 @@ pub fn run_main(daemon: impl Future<Output = Result<()>> + Send + 'static) -> Re
                 TrayIconEvent::Enter { .. } | TrayIconEvent::Click { .. },
             )) => app.refresh(false),
             Event::UserEvent(UserEvent::Exit(result)) => {
+                app.remove_icon();
                 let code = match result {
                     Ok(()) => 0,
                     Err(e) => {
@@ -229,8 +230,17 @@ impl App {
                 }
             }
             Action::Refresh => self.refresh(true),
-            Action::Quit => std::process::exit(0),
+            Action::Quit => {
+                self.remove_icon();
+                std::process::exit(0)
+            }
         }
+    }
+
+    /// Exiting skips destructors, and Windows keeps showing the icon of a
+    /// program that did not remove it until the pointer reaches it.
+    fn remove_icon(&mut self) {
+        drop(self.icon.take());
     }
 
     /// A clickable entry doing `action`.
@@ -323,6 +333,11 @@ fn label(text: &str) -> String {
 /// waits for an answer.
 fn drop_icon(attention: bool) -> Icon {
     const SIZE: u32 = 44;
+    Icon::from_rgba(drop_rgba(SIZE, attention), SIZE, SIZE).expect("valid icon size")
+}
+
+/// The drop as `size` × `size` RGBA pixels.
+pub fn drop_rgba(size: u32, attention: bool) -> Vec<u8> {
     const SAMPLES: u32 = 4;
     // macOS draws template images in the menu bar's own color, from their
     // alpha only.
@@ -331,14 +346,14 @@ fn drop_icon(attention: bool) -> Icon {
     } else {
         [0x25, 0x63, 0xEB]
     };
-    let mut rgba = Vec::with_capacity((SIZE * SIZE * 4) as usize);
-    for py in 0..SIZE {
-        for px in 0..SIZE {
+    let mut rgba = Vec::with_capacity((size * size * 4) as usize);
+    for py in 0..size {
+        for px in 0..size {
             let mut covered = 0;
             for sy in 0..SAMPLES {
                 for sx in 0..SAMPLES {
-                    let x = (px as f32 + (sx as f32 + 0.5) / SAMPLES as f32) / SIZE as f32;
-                    let y = (py as f32 + (sy as f32 + 0.5) / SAMPLES as f32) / SIZE as f32;
+                    let x = (px as f32 + (sx as f32 + 0.5) / SAMPLES as f32) / size as f32;
+                    let y = (py as f32 + (sy as f32 + 0.5) / SAMPLES as f32) / size as f32;
                     if drop_pixel(x, y, attention) {
                         covered += 1;
                     }
@@ -348,7 +363,7 @@ fn drop_icon(attention: bool) -> Icon {
             rgba.extend_from_slice(&[color[0], color[1], color[2], alpha]);
         }
     }
-    Icon::from_rgba(rgba, SIZE, SIZE).expect("valid icon size")
+    rgba
 }
 
 /// Whether the point (`x`, `y`) of the unit square is painted.

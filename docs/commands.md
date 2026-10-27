@@ -17,7 +17,8 @@ the same network.
   [recv](#tuxdrop-recv) · [status](#tuxdrop-status) · [accept / reject](#tuxdrop-accept--tuxdrop-reject) ·
   [trust / untrust / trusted](#tuxdrop-trust--untrust--trusted) · [name](#tuxdrop-name)
 - [tuxdropd](#tuxdropd): [tray icon](#tray-icon) · [file manager menu](#file-manager-menu) ·
-  [D-Bus API](#d-bus-api) · [macOS](#macos) · [control socket](#control-socket-macos-windows)
+  [D-Bus API](#d-bus-api) · [macOS](#macos) · [Windows](#windows) ·
+  [control socket](#control-socket-macos-windows)
 - [Files and configuration](#files-and-configuration)
 - [Troubleshooting](#troubleshooting)
 
@@ -175,7 +176,8 @@ tuxdrop share <PATHS>...
 ```
 
 Asks the running daemon to show a dialog listing the nearby devices (zenity on Linux, a macOS
-list), then sends the files or folders to the one picked, as **Send files…** in the tray would.
+list, a Windows dialog with one button per device), then sends the files or folders to the one
+picked, as **Send files…** in the tray would.
 It returns at once; the daemon reports progress and errors. If no device is known, the daemon
 looks for 4 seconds before showing "No device found". On Linux it can serve a file manager other
 than Nautilus (a Dolphin or Thunar custom action).
@@ -412,6 +414,22 @@ The entry is the app extension `tuxDrop.app/Contents/PlugIns/tuxDropShare.appex`
 read `~/Library/Application Support/tuxdrop/control-socket`, where the daemon writes the path of
 its control socket, and connect to that socket.
 
+**Explorer (Windows)**: right-click files, then **Share** (the share icon at the top of the menu
+on Windows 11): **tuxDrop** is among the apps of the Share window. A dialog of the daemon lists
+the nearby devices, one button per device; click one to send, as for `Send`. The daemon is
+started if it was not running.
+
+- Not in the Share window: the tuxDrop package is not registered, run the installer again
+  (`Get-AppxPackage tuxDrop` lists it).
+- Folders: Windows does not offer **Share** on folders; use **Send Folder…** in the tray menu or
+  `tuxdrop send`.
+
+The entry is `tuxdrop-share.exe`. A sparse package (`packaging/windows/AppxManifest.xml`), which
+holds no program but points to the install folder, declares it as a share target; Windows only
+lists share targets that have a package identity. The program receives the shared files, hands
+them to the daemon (`share` request on the control pipe) and exits. Started with paths as
+arguments, it shares those.
+
 ### D-Bus API
 
 The daemon exposes `org.tuxdrop.Daemon1` at `/org/tuxdrop/Daemon` on the session bus. `tuxdrop
@@ -473,6 +491,33 @@ It does the same as on Linux, with these differences:
 - On startup the app registers its Share menu extension and enables it, unless it was turned
   off in **Edit Extensions…**: an app copied from the disk image needs nothing else.
 
+### Windows
+
+On Windows, tuxdropd runs in the notification area, without a window. The installer starts it at
+login (value `tuxDrop` of `HKCU\Software\Microsoft\Windows\CurrentVersion\Run`) and adds a
+**tuxDrop** Start menu entry. Starting it again while it runs does nothing.
+
+```powershell
+Stop-Process -Name tuxdropd; Start-Process "$env:LOCALAPPDATA\Programs\tuxDrop\tuxdropd.exe"  # restart, e.g. after editing config.toml
+Get-Content "$env:LOCALAPPDATA\tuxdrop\tuxdropd.log" -Wait                                      # logs
+```
+
+The log of the previous run is `tuxdropd.old.log`. With `RUST_LOG` set in the user environment
+before starting it, the daemon logs more or less.
+
+It does the same as on Linux, with these differences:
+- **Notification area icon** with the same menu as on macOS, **Open at Login** and **Quit
+  tuxDrop** included. If the icon is hidden, drag it out of the ^ overflow, or turn tuxDrop on in
+  **Settings > Personalization > Taskbar > Other system tray icons**.
+- **Notifications** are Windows toasts with buttons. A request stays on screen until answered
+  (**Accept**, **Decline**, **Always accept**); a transfer shows a progress bar and **Cancel**.
+  Buttons work while the daemon runs.
+- **Text messages**: toast with **Copy** (Windows clipboard).
+- **Send Files…**, **Send Folder…**, **Rename…** and the `share` device list use Windows dialogs.
+  In the device list, **Enter** cancels: the dialog takes the focus, and a key meant for another
+  window must not send anything.
+- If the daemon cannot start (port taken), an alert says why.
+
 ### Control socket (macOS, Windows)
 
 Without a session bus, the daemon serves the same requests as the D-Bus API on a local socket
@@ -484,6 +529,14 @@ connection carries one JSON request and one JSON answer, each on one line:
 sock=$(ls "$(getconf DARWIN_USER_TEMP_DIR)"tuxdropd-*.sock)
 echo '{"method":"list_pending"}' | nc -U "$sock"
 echo '{"method":"send","target":"alpha","paths":["/Users/me/report.pdf"]}' | nc -U "$sock"
+```
+
+```powershell
+$pipe = New-Object IO.Pipes.NamedPipeClientStream '.', "tuxdrop-$env:USERNAME", 'InOut'
+$pipe.Connect(3000)
+$writer = New-Object IO.StreamWriter $pipe; $writer.AutoFlush = $true
+$writer.WriteLine('{"method":"list_pending"}')
+(New-Object IO.StreamReader $pipe).ReadLine()
 ```
 
 Methods: `list_peers`, `announce`, `list_pending`, `accept` / `reject` / `cancel` (with `id`),
@@ -507,6 +560,10 @@ Methods: `list_peers`, `announce`, `list_pending`, `accept` / `reject` / `cancel
 | `/usr/share/nautilus-python/extensions/tuxdrop.py` | Files right-click menu (packages) |
 | *(macOS)* `~/Library/Application Support/tuxdrop/control-socket` | path of the daemon's control socket, for the Share menu extension (while the daemon runs) |
 | `/etc/ufw/applications.d/tuxdrop`, `/usr/lib/firewalld/services/tuxdrop.xml` | firewall definitions, not enabled by default |
+| *(Windows)* `%APPDATA%\tuxdrop\` | `config.toml`, identity, `trusted.json` and `names.json` together |
+| *(Windows)* `%LOCALAPPDATA%\Programs\tuxDrop\` | programs, added to the user's `PATH` (installer) |
+| *(Windows)* `%LOCALAPPDATA%\tuxdrop\` | `tuxdropd.log`, the toast icon |
+| *(Windows)* firewall rules of group `tuxDrop` | inbound from the local subnet to `tuxdropd.exe` and `tuxdrop.exe` (installer) |
 
 `config.toml`: every key is optional, and an unknown key is an error.
 
@@ -525,7 +582,9 @@ pin = "1234"                                 # senders must give it (tuxdrop sen
 
 **No device found / other devices do not see me.**
 - Check the firewall first; the port must accept UDP and TCP from the local network:
-  `sudo ufw allow from 192.168.0.0/16 to any app tuxDrop`.
+  `sudo ufw allow from 192.168.0.0/16 to any app tuxDrop`. On Windows the installer adds the
+  rules (`Get-NetFirewallRule -Group tuxDrop`); a program run from elsewhere (`cargo run`)
+  needs its own, or a click on **Allow** when Windows asks.
 - Guest Wi-Fi and some company networks block traffic between clients.
 - As a last resort, send to the IP address directly (`tuxdrop send 192.168.1.34 file`).
 

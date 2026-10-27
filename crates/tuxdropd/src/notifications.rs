@@ -9,8 +9,6 @@ pub const OPEN: &str = "open";
 pub const COPY: &str = "copy";
 
 /// Reported by a `Notifier`, in the order the user acted.
-// The Windows notifier has no buttons yet.
-#[cfg_attr(windows, allow(dead_code))]
 #[derive(Debug)]
 pub enum NotificationEvent {
     /// A button of notification `id` was clicked.

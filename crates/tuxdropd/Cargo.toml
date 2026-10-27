@@ -22,5 +22,31 @@ serde_json = "1"
 tao = "0.37"
 tray-icon = "0.26"
 
+[target.'cfg(windows)'.dependencies]
+dirs = "6"
+windows = { version = "0.62", features = [
+    "ApplicationModel",
+    "ApplicationModel_Activation",
+    "ApplicationModel_DataTransfer_ShareTarget",
+    "Data_Xml_Dom",
+    "Foundation_Collections",
+    "Storage",
+    "UI_Notifications",
+    "Win32_Storage_FileSystem",
+    "Win32_Storage_Packaging_Appx",
+    "Win32_System_Com",
+    "Win32_System_Console",
+    "Win32_System_DataExchange",
+    "Win32_System_LibraryLoader",
+    "Win32_System_Memory",
+    "Win32_System_Ole",
+    "Win32_System_Registry",
+    "Win32_UI_Controls",
+    "Win32_UI_Input_KeyboardAndMouse",
+    "Win32_UI_Shell",
+    "Win32_UI_Shell_Common",
+    "Win32_UI_WindowsAndMessaging",
+] }
+
 [dev-dependencies]
 tempfile = "3"

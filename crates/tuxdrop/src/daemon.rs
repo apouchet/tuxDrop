@@ -21,7 +21,9 @@ pub use backend::Daemon;
 const NOT_RUNNING: &str = "tuxdropd is not running (systemctl --user start tuxdropd)";
 #[cfg(target_os = "macos")]
 const NOT_RUNNING: &str = "tuxdropd is not running (open tuxDrop.app)";
-#[cfg(not(any(freedesktop, target_os = "macos")))]
+#[cfg(windows)]
+const NOT_RUNNING: &str = "tuxdropd is not running (start tuxDrop from the Start menu)";
+#[cfg(not(any(freedesktop, target_os = "macos", windows)))]
 const NOT_RUNNING: &str = "tuxdropd is not running";
 
 async fn require() -> Result<Daemon> {

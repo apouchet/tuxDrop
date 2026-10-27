@@ -5,7 +5,7 @@ use std::collections::HashMap;
 use std::ffi::OsStr;
 use std::io;
 use std::net::IpAddr;
-use std::path::{Path, PathBuf};
+use std::path::{Component, Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard};
 use std::time::{Duration, Instant};
@@ -610,9 +610,48 @@ pub fn sanitize_relative_path(name: &str) -> Option<PathBuf> {
         if part == ".." || part.len() > 255 || part.chars().any(char::is_control) {
             return None;
         }
+        #[cfg(windows)]
+        let part = windows_name(part);
         out.push(part);
     }
+    // Only plain names: no root, drive or parent left.
+    if !out.components().all(|c| matches!(c, Component::Normal(_))) {
+        return None;
+    }
     (!out.as_os_str().is_empty()).then_some(out)
+}
+
+/// A name Windows accepts and stores as given. It refuses `<>:"|?*` (a `:`
+/// would also make `C:` a drive or `a.txt:x` an alternate data stream),
+/// silently drops trailing dots and spaces, and opens a device for `CON`,
+/// `NUL`, `COM1`… whatever the extension. Such characters become `_`, and a
+/// device name is prefixed with `_`.
+#[cfg(windows)]
+fn windows_name(part: &str) -> String {
+    let mut name: String = part
+        .chars()
+        .map(|c| match c {
+            '<' | '>' | ':' | '"' | '|' | '?' | '*' => '_',
+            c => c,
+        })
+        .collect();
+    let kept = name.trim_end_matches(['.', ' ']).len();
+    let dropped = name.len() - kept;
+    name.truncate(kept);
+    name.push_str(&"_".repeat(dropped));
+    let stem = name.split('.').next().unwrap_or("").trim_end();
+    let device = matches!(
+        stem.to_ascii_uppercase().as_str(),
+        "CON" | "PRN" | "AUX" | "NUL" | "CONIN$" | "CONOUT$"
+    ) || (stem.len() == 4
+        && stem
+            .get(..3)
+            .is_some_and(|p| p.eq_ignore_ascii_case("COM") || p.eq_ignore_ascii_case("LPT"))
+        && stem.as_bytes()[3].is_ascii_digit());
+    if device {
+        name.insert(0, '_');
+    }
+    name
 }
 
 /// Creates `rel` below `base` one component at a time, refusing to traverse
@@ -686,6 +725,26 @@ mod tests {
         assert_eq!(sanitize_relative_path("./"), None);
         assert_eq!(sanitize_relative_path("bad\nname"), None);
         assert_eq!(sanitize_relative_path(&"x".repeat(256)), None);
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn sanitize_keeps_windows_names_inside() {
+        let path = |s: &str| sanitize_relative_path(s).map(|p| p.to_string_lossy().into_owned());
+        assert_eq!(path("C:/Windows/x").as_deref(), Some(r"C_\Windows\x"));
+        assert_eq!(path("C:x").as_deref(), Some("C_x"));
+        assert_eq!(path("a.txt:evil").as_deref(), Some("a.txt_evil"));
+        assert_eq!(path(r#"q?<"*|>.txt"#).as_deref(), Some("q______.txt"));
+        assert_eq!(path("dir. /end.").as_deref(), Some(r"dir__\end_"));
+        assert_eq!(path("...").as_deref(), Some("___"));
+        assert_eq!(path("con").as_deref(), Some("_con"));
+        assert_eq!(path("NUL.tar.gz").as_deref(), Some("_NUL.tar.gz"));
+        assert_eq!(path("com1 .txt").as_deref(), Some("_com1 .txt"));
+        assert_eq!(path("LPT9").as_deref(), Some("_LPT9"));
+        assert_eq!(path("console.txt").as_deref(), Some("console.txt"));
+        assert_eq!(path("COM10").as_deref(), Some("COM10"));
+        assert_eq!(path("éé").as_deref(), Some("éé"));
+        assert_eq!(path("été/photo.jpg").as_deref(), Some(r"été\photo.jpg"));
     }
 
     #[test]

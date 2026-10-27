@@ -78,7 +78,18 @@ Plan : `~/.claude/plans/j-aimerais-cree-un-programme-purring-acorn.md`
 - [x] Vérifié sur macOS : tests 34/34, démon + CLI isolés (status, envoi approuvé / non approuvé + accept CLI fermant la dialog, Send via socket), balayage sur en0
 - [x] Vérifié Linux : clippy + tests + build release dans `rust:1.90-bookworm` ; Windows : `cargo check`/clippy en cible croisée
 - [ ] À faire par toi : `scripts/install-macos.sh`, autorisations Réseau local / Téléchargements, échange réel avec un téléphone ou le PC Linux
-- [ ] Windows : notifications toast, dialogues, presse-papiers, démarrage auto, menu Explorer (liste dans `platform/native/windows.rs`)
+- [x] Windows : voir la section suivante
+
+## Windows — 2026-10-26
+- [x] Cœur : nom de l'appareil des Paramètres (`GetComputerNameExW`, au lieu de COMPUTERNAME en majuscules), renommage sans écrasement `MoveFileExW`
+- [x] Sécurité : noms reçus nettoyés pour Windows (`<>:"|?*` → `_`, points/espaces finaux, `CON`/`NUL`/`COM1`… préfixés) — `C:` ou `a.txt:flux` sortaient du dossier de réception ou ouvraient un flux NTFS ; contrôle final « composants simples seulement » sur tous les OS
+- [x] Correctif serveur (tous OS) : fermeture « lingering » des connexions ; un upload refusé en cours (annulation par le receveur) faisait un RST, et Windows jetait la réponse 409 avant que l'expéditeur la lise (`receiver_cancel_stops_sender_and_cleans_partial_file` échouait)
+- [x] Démon : toasts WinRT (AUMID déclaré dans HKCU) — demande Accept / Decline / Always accept qui reste à l'écran, barre de progression + Cancel, Open folder, message + Copy ; presse-papiers Win32 ; boîte de choix d'appareil (task dialog, Entrée = Annuler), saisie de nom (dialogue en mémoire), sélecteur de fichiers/dossiers (`IFileOpenDialog`) ; démarrage auto (clé `Run`, menu « Open at Login ») ; sans console (journal `%LOCALAPPDATA%\tuxdrop\tuxdropd.log`) ; un second lancement s'arrête sans rien toucher ; icône retirée avant de quitter
+- [x] Feuille « Partager » de l'Explorateur : `tuxdrop-share.exe` + paquet sparse signé (`packaging/windows/AppxManifest.xml`, cible de partage `StorageItems`), qui transmet au démon (`share`) et le lance si besoin
+- [x] Manifestes intégrés à l'édition de liens (common controls 6, DPI par écran, élément `msix` pour tuxdrop-share)
+- [x] `scripts/package-windows.ps1` (zip + msix signé par un certificat auto-signé `CN=tuxDrop`), `scripts/install-windows.ps1`, installeur `install.cmd` / `install.ps1` (programmes dans `%LOCALAPPDATA%\Programs\tuxDrop`, PATH, menu Démarrer, certificat + pare-feu en une élévation UAC)
+- [x] Vérifié sur ce PC (Windows 11 25H2) : tests 35/35, clippy ; découverte réseau réelle ; envoi en boucle locale 300 Mo / 3 Go avec toast de demande (Accept cliqué), progression, Open folder ; boîtes choix d'appareil / renommer / fichiers ; paquet construit et signé
+- [ ] À faire par toi : lancer l'installeur (bloqué en mode auto : il modifie le magasin de certificats machine et le pare-feu), puis clic droit > Partager > tuxDrop ; échange réel avec le téléphone ou le PC Linux
 
 ## M5 — AirDrop natif via OWL (exploratoire)
 - [x] État des lieux et plan : `docs/airdrop.md` (branche `airdrop`), **en attente de validation**

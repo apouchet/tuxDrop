@@ -5,7 +5,9 @@
 //! certificate.
 
 use std::net::{IpAddr, SocketAddr};
+use std::pin::Pin;
 use std::sync::Arc;
+use std::task::{Context, Poll};
 use std::time::Duration;
 
 use anyhow::Result;
@@ -16,7 +18,8 @@ use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post};
 use axum::{Json, Router};
 use hyper_util::rt::{TokioExecutor, TokioIo};
-use tokio::net::TcpListener;
+use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, ReadBuf};
+use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::mpsc;
 use tokio_rustls::TlsAcceptor;
 use tower_service::Service;
@@ -89,6 +92,7 @@ pub async fn serve(
         let acceptor = acceptor.clone();
         let router = router.clone();
         tokio::spawn(async move {
+            let tcp = Lingering(Some(tcp));
             let tls =
                 match tokio::time::timeout(Duration::from_secs(10), acceptor.accept(tcp)).await {
                     Ok(Ok(tls)) => tls,
@@ -115,6 +119,66 @@ pub async fn serve(
             {
                 tracing::debug!("connection with {addr} ended: {e}");
             }
+        });
+    }
+}
+
+/// How long a closed connection keeps reading what the peer still sends.
+const LINGER: Duration = Duration::from_secs(2);
+
+/// A connection that, once dropped, reads and discards what the peer still
+/// sends for up to [`LINGER`] before closing. An upload refused midway (the
+/// user cancelled) is answered while its body is still coming; closing with
+/// unread data resets the connection, and Windows then discards the answer
+/// before the sender reads it.
+struct Lingering(Option<TcpStream>);
+
+impl Lingering {
+    fn stream(&mut self) -> Pin<&mut TcpStream> {
+        Pin::new(self.0.as_mut().expect("stream taken only on drop"))
+    }
+}
+
+impl AsyncRead for Lingering {
+    fn poll_read(
+        mut self: Pin<&mut Self>,
+        cx: &mut Context<'_>,
+        buf: &mut ReadBuf<'_>,
+    ) -> Poll<std::io::Result<()>> {
+        self.stream().poll_read(cx, buf)
+    }
+}
+
+impl AsyncWrite for Lingering {
+    fn poll_write(
+        mut self: Pin<&mut Self>,
+        cx: &mut Context<'_>,
+        buf: &[u8],
+    ) -> Poll<std::io::Result<usize>> {
+        self.stream().poll_write(cx, buf)
+    }
+
+    fn poll_flush(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<std::io::Result<()>> {
+        self.stream().poll_flush(cx)
+    }
+
+    fn poll_shutdown(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<std::io::Result<()>> {
+        self.stream().poll_shutdown(cx)
+    }
+}
+
+impl Drop for Lingering {
+    fn drop(&mut self) {
+        let (Some(mut stream), Ok(runtime)) = (self.0.take(), tokio::runtime::Handle::try_current())
+        else {
+            return;
+        };
+        runtime.spawn(async move {
+            let mut buf = vec![0u8; 64 * 1024];
+            let drain = async {
+                while matches!(stream.read(&mut buf).await, Ok(n) if n > 0) {}
+            };
+            let _ = tokio::time::timeout(LINGER, drain).await;
         });
     }
 }

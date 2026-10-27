@@ -3,6 +3,9 @@
 //! `org.tuxdrop.Daemon1` on the session bus on Linux, a local socket on macOS
 //! and Windows. Everything specific to a desktop lives in [`platform`].
 
+// No console window on Windows.
+#![cfg_attr(all(windows, not(test)), windows_subsystem = "windows")]
+
 mod api;
 mod notifications;
 mod platform;
@@ -347,11 +350,28 @@ fn top_level(download_dir: &Path, saved: &[PathBuf]) -> Vec<PathBuf> {
 }
 
 fn main() -> Result<()> {
-    tracing_subscriber::fmt()
-        .with_env_filter(
-            tracing_subscriber::EnvFilter::try_from_default_env().unwrap_or_else(|_| "info".into()),
-        )
-        .init();
+    let logs = tracing_subscriber::fmt().with_env_filter(
+        tracing_subscriber::EnvFilter::try_from_default_env().unwrap_or_else(|_| "info".into()),
+    );
+    #[cfg(windows)]
+    {
+        // The package logos: `tuxdropd --write-icon <size> <file.png>`.
+        let args: Vec<String> = std::env::args().skip(1).collect();
+        if let [flag, size, path] = args.as_slice()
+            && flag == "--write-icon"
+        {
+            return platform::write_icon(size.parse()?, Path::new(path));
+        }
+        if platform::already_running() {
+            return Ok(());
+        }
+        // A program without a console has no standard error to log to.
+        if let Some(file) = platform::log_file() {
+            logs.with_writer(Mutex::new(file)).with_ansi(false).init();
+            return platform::run_main(run());
+        }
+    }
+    logs.init();
     platform::run_main(run())
 }
 

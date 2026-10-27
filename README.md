@@ -1,9 +1,8 @@
 # tuxDrop
 
-AirDrop-like file sharing for Linux and macOS, speaking the
+AirDrop-like file sharing for Linux, macOS and Windows, speaking the
 [LocalSend v2 protocol](https://github.com/localsend/protocol): works with the LocalSend app on iPhone,
-Android, Windows and macOS on the same network. Windows support is prepared in the code but not
-finished (see [Platforms](#platforms)).
+Android, Windows and macOS on the same network (see [Platforms](#platforms)).
 
 ## Install (Linux)
 
@@ -111,22 +110,65 @@ arm64 + x86_64 build; `CODESIGN_IDENTITY="Developer ID Application: …"` to sig
 distribution (otherwise ad-hoc, which only this Mac trusts) and `NOTARY_PROFILE=<profile>` to
 also notarize the disk image (`xcrun notarytool store-credentials` creates the profile).
 
+## Install (Windows)
+
+Windows 10 (2004) or 11. **From the zip**: extract `tuxDrop-<version>-windows-x64.zip` and
+double-click `install.cmd` (or `install.cmd -Uninstall` to remove it, keeping the identity and
+settings). Windows asks once for administrator rights: to trust the certificate of the package
+that adds tuxDrop to the Share window, and to let the local network reach tuxDrop through the
+firewall (TCP and UDP to `tuxdropd.exe` and `tuxdrop.exe`, from the local subnet only, whatever
+the network profile). Everything else is installed for the current user only:
+
+- the programs in `%LOCALAPPDATA%\Programs\tuxDrop`, added to `PATH` (open a new terminal for
+  the `tuxdrop` command);
+- `tuxdropd` started now and at each login, and a **tuxDrop** Start menu entry;
+- the sparse package `tuxDrop`, which puts tuxDrop in Explorer's Share window.
+
+**From the sources** requires Rust (`rustup`, MSVC toolchain) and the Visual Studio Build Tools
+with "Desktop development with C++" (compiler and Windows SDK):
+
+```powershell
+winget install Rustlang.Rustup
+winget install Microsoft.VisualStudio.2022.BuildTools --override "--wait --quiet --add Microsoft.VisualStudio.Workload.VCTools --includeRecommended"
+powershell -ExecutionPolicy Bypass -File scripts\install-windows.ps1             # build, install, start
+powershell -ExecutionPolicy Bypass -File scripts\install-windows.ps1 -Uninstall  # stop and remove
+```
+
+- **Notification area icon**: the same menu as on macOS (devices with **Send Files…**, **Send
+  Folder…**, **Rename…**, **Trusted**; transfers with **Cancel**; a waiting request with
+  **Accept** / **Decline**; **Open at Login**). Windows may first put it in the ^ overflow.
+- **Share window**: right-click files in Explorer, **Share**, **tuxDrop**: a dialog lists the
+  nearby devices, click one to send. Windows does not offer Share on folders: use **Send
+  Folder…** in the icon's menu.
+- **Notifications**: a request stays on screen with **Accept**, **Decline** and **Always
+  accept**; transfers show a progress bar with **Cancel**; received files get **Open folder**, a
+  text message **Copy**.
+
+Logs go to `%LOCALAPPDATA%\tuxdrop\tuxdropd.log`; settings, identity and trusted devices are in
+`%APPDATA%\tuxdrop`.
+
+`scripts/package-windows.ps1` only builds `dist\tuxDrop-<version>-windows-<arch>\` and its zip:
+the programs, the installer, and the sparse package `tuxDrop.msix` signed with a self-signed
+certificate `CN=tuxDrop` (created in `Cert:\CurrentUser\My` on first use, then reused: keep it
+to sign updates) exported as `tuxDrop.cer`.
+
 ## Platforms
 
 | | Linux | macOS | Windows |
 |---|---|---|---|
-| CLI (`send`, `recv`, `peers`, `trust`, `name`…) | yes | yes | prepared |
-| Daemon control (`status`, `accept`, `reject`) | D-Bus | local socket | named pipe, prepared |
-| Request with buttons | notification | dialog | tray menu only |
-| Progress, Cancel | notification and tray | menu bar | tray menu |
+| CLI (`send`, `recv`, `peers`, `trust`, `name`…) | yes | yes | yes |
+| Daemon control (`status`, `accept`, `reject`) | D-Bus | local socket | named pipe |
+| Request with buttons | notification | dialog | toast |
+| Progress, Cancel | notification and tray | menu bar | toast and tray |
 | Tray / menu bar icon | StatusNotifierItem | yes | yes (tray-icon) |
-| Send from the file manager | Nautilus, tray | Finder Share menu, menu bar | tray: not yet (no file dialog) |
-| Copy a received message | wl-copy / xclip | pbcopy | not yet |
-| Autostart | systemd user service | LaunchAgent | not yet |
+| Send from the file manager | Nautilus, tray | Finder Share menu, menu bar | Explorer Share window, tray |
+| Copy a received message | wl-copy / xclip | pbcopy | clipboard API |
+| Autostart | systemd user service | LaunchAgent | `Run` registry value |
 
 Everything OS-specific is in `crates/tuxdrop-core/src/sys.rs` (core) and
 `crates/tuxdropd/src/platform/` (desktop): `freedesktop/` for Linux and BSD, `native/` for macOS
-(`macos.rs`) and Windows (`windows.rs`, which lists what is left to do).
+(`macos.rs`) and Windows (`windows.rs`); the Windows Share window entry is
+`crates/tuxdropd/src/bin/tuxdrop-share.rs` with `packaging/windows/`.
 Check that other targets still compile with `cargo check --target x86_64-unknown-linux-gnu` or
 `x86_64-pc-windows-msvc`.
 
@@ -187,4 +229,5 @@ pin = "1234"                              # senders must provide it
 - `crates/tuxdropd`: daemon with notifications, tray icon and its control API: the
   `org.tuxdrop.Daemon1` session D-Bus API on Linux (`ListPeers`, `Announce`, `ListPending`,
   `Accept`, `Reject`, `Send`, `Cancel`; signals `IncomingRequest`, `Progress`,
-  `TransferFinished`), the same requests on a local socket on macOS and Windows
+  `TransferFinished`), the same requests on a local socket on macOS and Windows; and
+  `tuxdrop-share`, the Windows Share window entry (does nothing elsewhere)

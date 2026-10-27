@@ -1,0 +1,10 @@
+<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<!-- Merged into tuxdrop-share.exe's manifest (crates/tuxdropd/build.rs): ties the
+     program to the tuxDrop sparse package (AppxManifest.xml), which gives it the
+     package identity when the package is registered. Publisher, name and
+     application id must match the package. -->
+<assembly xmlns="urn:schemas-microsoft-com:asm.v1" manifestVersion="1.0">
+  <assemblyIdentity version="1.0.0.0" name="tuxDrop.Share"/>
+  <msix xmlns="urn:schemas-microsoft-com:msix.v1"
+    publisher="CN=tuxDrop" packageName="tuxDrop" applicationId="tuxDrop"/>
+</assembly>

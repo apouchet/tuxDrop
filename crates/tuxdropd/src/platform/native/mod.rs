@@ -1,6 +1,6 @@
 //! macOS and Windows: a menu bar / notification area icon (tray-icon, which
-//! needs the main thread), the control API on a local socket, and the OS's
-//! own dialogs and notifications.
+//! needs the main thread), the control API on a local socket (a named pipe
+//! on Windows), and the OS's own dialogs and notifications.
 
 #[cfg(target_os = "macos")]
 mod macos;
@@ -24,6 +24,8 @@ pub use self::os::{
     CLIPBOARD_HELP, DIALOG_HELP, FileManager, Notifier, ask_text, copy_to_clipboard, pick_device,
     pick_paths,
 };
+#[cfg(windows)]
+pub use self::os::{already_running, log_file, write_icon};
 pub use self::tray::run_main;
 use crate::Shared;
 use crate::api::ApiError;

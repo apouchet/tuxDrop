@@ -1,0 +1,6 @@
+# LF everywhere, on every OS, whatever core.autocrlf says.
+* text=auto eol=lf
+
+# cmd.exe needs CRLF.
+*.cmd text eol=crlf
+*.bat text eol=crlf

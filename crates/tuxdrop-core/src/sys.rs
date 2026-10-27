@@ -1,5 +1,5 @@
 //! Operating-system specific helpers: everything else in the core is
-//! portable. Linux and macOS are supported; Windows is prepared.
+//! portable. Linux, macOS and Windows are supported.
 
 use std::io;
 use std::path::Path;
@@ -41,6 +41,20 @@ pub fn hostname() -> String {
     }
     #[cfg(windows)]
     {
+        // The device name of the Settings app, with its case, rather than
+        // the upper-case NetBIOS name in COMPUTERNAME.
+        use windows_sys::Win32::System::SystemInformation::{
+            ComputerNamePhysicalDnsHostname, GetComputerNameExW,
+        };
+        let mut buf = [0u16; 256];
+        let mut len = buf.len() as u32;
+        // SAFETY: `buf` holds `len` characters.
+        let ok = unsafe {
+            GetComputerNameExW(ComputerNamePhysicalDnsHostname, buf.as_mut_ptr(), &mut len)
+        };
+        if ok != 0 && len > 0 {
+            return String::from_utf16_lossy(&buf[..len as usize]);
+        }
         std::env::var("COMPUTERNAME").unwrap_or_else(|_| "Windows".to_owned())
     }
 }
@@ -138,7 +152,31 @@ pub fn rename_noreplace(from: &Path, to: &Path) -> io::Result<()> {
             Err(e) => Err(e.into()),
         }
     }
-    #[cfg(not(any(target_os = "linux", target_os = "android", target_os = "macos")))]
+    #[cfg(windows)]
+    {
+        use std::os::windows::ffi::OsStrExt;
+        use windows_sys::Win32::Storage::FileSystem::MoveFileExW;
+        let wide = |p: &Path| -> Vec<u16> {
+            p.as_os_str()
+                .encode_wide()
+                .chain(std::iter::once(0))
+                .collect()
+        };
+        let (from, to) = (wide(from), wide(to));
+        // Without MOVEFILE_REPLACE_EXISTING, an existing `to` is an error
+        // (ERROR_ALREADY_EXISTS, which std maps to `AlreadyExists`).
+        // SAFETY: both paths are NUL-terminated.
+        if unsafe { MoveFileExW(from.as_ptr(), to.as_ptr(), 0) } == 0 {
+            return Err(io::Error::last_os_error());
+        }
+        Ok(())
+    }
+    #[cfg(not(any(
+        target_os = "linux",
+        target_os = "android",
+        target_os = "macos",
+        windows
+    )))]
     {
         // A hard link cannot replace an existing file.
         match std::fs::hard_link(from, to) {
@@ -152,6 +190,7 @@ pub fn rename_noreplace(from: &Path, to: &Path) -> io::Result<()> {
 
 /// Best effort: a file created at `to` between the check and the rename is
 /// replaced.
+#[cfg(not(windows))]
 fn rename_checked(from: &Path, to: &Path) -> io::Result<()> {
     if std::fs::symlink_metadata(to).is_ok() {
         return Err(io::ErrorKind::AlreadyExists.into());

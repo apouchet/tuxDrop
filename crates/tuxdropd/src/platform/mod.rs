@@ -15,9 +15,9 @@
 //! `org.tuxdrop.Daemon1`), StatusNotifierItem tray, wl-copy/xclip, zenity.
 //!
 //! **native** (macOS, Windows): menu bar / notification area icon
-//! (tray-icon), control API on a local socket ([`tuxdrop_core::ipc`]), and
-//! per-OS dialogs and notifications: AppleScript on macOS, still to be
-//! written for Windows.
+//! (tray-icon), control API on a local socket or named pipe
+//! ([`tuxdrop_core::ipc`]), and per-OS dialogs and notifications:
+//! AppleScript on macOS, toasts and Win32 dialogs on Windows.
 
 #[cfg(freedesktop)]
 mod freedesktop;

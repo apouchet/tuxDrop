@@ -3176,6 +3176,7 @@ name = "tuxdropd"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "dirs 6.0.0",
  "futures-util",
  "ksni",
  "serde_json",
@@ -3187,6 +3188,7 @@ dependencies = [
  "tracing-subscriber",
  "tray-icon",
  "tuxdrop-core",
+ "windows",
  "zbus",
 ]
 

@@ -367,7 +367,7 @@ fn register_aumid() -> Result<()> {
 /// Writes the tray icon's drop as a PNG of `size` pixels (the toast icon,
 /// and the package logos: `tuxdropd --write-icon <size> <file>`).
 pub fn write_icon(size: u32, path: &Path) -> Result<()> {
-    let rgba = super::tray::drop_rgba(size, false);
+    let rgba = crate::icon::drop_rgba(size, false);
     std::fs::write(path, png::encode(size, size, &rgba))
         .with_context(|| format!("writing {}", path.display()))
 }
@@ -534,13 +534,11 @@ impl FileManager {
         explorer(&[folder.as_os_str().to_owned()]).await;
     }
 
-    /// Opens the folder holding the first of `items`, with it selected.
-    pub async fn select(&self, items: &[impl AsRef<Path>]) {
-        if let Some(first) = items.first() {
-            let mut arg = std::ffi::OsString::from("/select,");
-            arg.push(first.as_ref());
-            explorer(&[arg]).await;
-        }
+    /// Opens the folder holding `item`, with it selected.
+    pub async fn select(&self, item: &Path) {
+        let mut arg = std::ffi::OsString::from("/select,");
+        arg.push(item);
+        explorer(&[arg]).await;
     }
 }
 

@@ -35,11 +35,9 @@ impl FileManager {
         }
     }
 
-    /// Opens the folders holding `items`, with the items selected.
-    pub async fn select(&self, items: &[impl AsRef<Path>]) {
-        let uris: Vec<String> = items.iter().map(|p| file_uri(p.as_ref())).collect();
-        let uris: Vec<&str> = uris.iter().map(String::as_str).collect();
-        if let Err(e) = self.0.show_items(&uris, "").await {
+    /// Opens the folder holding `item`, with it selected.
+    pub async fn select(&self, item: &Path) {
+        if let Err(e) = self.0.show_items(&[&file_uri(item)], "").await {
             tracing::warn!("cannot show received files: {e}");
         }
     }

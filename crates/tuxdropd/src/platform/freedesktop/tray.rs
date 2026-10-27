@@ -6,11 +6,11 @@
 use std::sync::Arc;
 
 use ksni::menu::{CheckmarkItem, StandardItem, SubMenu};
-use ksni::{MenuItem, OfflineReason, Status, TrayMethods};
+use ksni::{Icon, MenuItem, OfflineReason, Status, TrayMethods};
 
-use crate::Shared;
 use crate::notifications::{ACCEPT, ALWAYS, REJECT};
 use crate::tray::{self, Device, Request, Snapshot, Transfer};
+use crate::{Shared, icon};
 
 /// A single underscore marks a mnemonic in menu labels.
 fn label(text: &str) -> String {
@@ -33,7 +33,6 @@ fn device_item(device: &Device) -> MenuItem<Tray> {
             .into(),
             StandardItem {
                 label: "Send files…".into(),
-                icon_name: "document-send-symbolic".into(),
                 activate: Box::new(move |tray: &mut Tray| {
                     tokio::spawn(tray::send_to(
                         tray.shared.clone(),
@@ -46,7 +45,6 @@ fn device_item(device: &Device) -> MenuItem<Tray> {
             .into(),
             StandardItem {
                 label: "Send folder…".into(),
-                icon_name: "folder-symbolic".into(),
                 activate: Box::new(move |tray: &mut Tray| {
                     tokio::spawn(tray::send_to(
                         tray.shared.clone(),
@@ -59,7 +57,6 @@ fn device_item(device: &Device) -> MenuItem<Tray> {
             .into(),
             StandardItem {
                 label: "Rename…".into(),
-                icon_name: "document-edit-symbolic".into(),
                 activate: Box::new(move |tray: &mut Tray| {
                     tokio::spawn(tray::rename(tray.shared.clone(), rename.clone()));
                 }),
@@ -86,7 +83,6 @@ fn request_items(request: &Request) -> Vec<MenuItem<Tray>> {
     let mut items = vec![
         StandardItem {
             label: label(&request.label),
-            icon_name: "mail-unread-symbolic".into(),
             enabled: false,
             ..Default::default()
         }
@@ -125,7 +121,6 @@ fn transfer_items(transfer: &Transfer) -> Vec<MenuItem<Tray>> {
         .into(),
         StandardItem {
             label: "Cancel".into(),
-            icon_name: "process-stop-symbolic".into(),
             activate: Box::new(move |tray: &mut Tray| {
                 let shared = tray.shared.clone();
                 let id = id.clone();
@@ -135,6 +130,25 @@ fn transfer_items(transfer: &Transfer) -> Vec<MenuItem<Tray>> {
         }
         .into(),
     ]
+}
+
+/// The drop in the sizes trays commonly draw, the host picking the closest.
+fn pixmaps(attention: bool) -> Vec<Icon> {
+    [16, 22, 24, 32, 48, 64]
+        .into_iter()
+        .map(|size| {
+            let mut data = icon::drop_rgba(size, attention);
+            // RGBA to ARGB.
+            for pixel in data.chunks_exact_mut(4) {
+                pixel.rotate_right(1);
+            }
+            Icon {
+                width: size as i32,
+                height: size as i32,
+                data,
+            }
+        })
+        .collect()
 }
 
 struct Tray {
@@ -153,12 +167,15 @@ impl ksni::Tray for Tray {
         "tuxDrop".into()
     }
 
-    fn icon_name(&self) -> String {
-        "send-to-symbolic".into()
+    /// The drop of [`crate::icon`], drawn rather than taken from the icon
+    /// theme so it looks the same on every distribution, and on macOS and
+    /// Windows.
+    fn icon_pixmap(&self) -> Vec<Icon> {
+        pixmaps(!self.snapshot.requests.is_empty())
     }
 
-    fn attention_icon_name(&self) -> String {
-        "mail-unread-symbolic".into()
+    fn attention_icon_pixmap(&self) -> Vec<Icon> {
+        pixmaps(true)
     }
 
     /// Asks for attention while a transfer waits for a decision.
@@ -203,7 +220,6 @@ impl ksni::Tray for Tray {
         items.push(
             StandardItem {
                 label: "Open received files".into(),
-                icon_name: "folder-download-symbolic".into(),
                 activate: Box::new(|tray: &mut Self| {
                     tokio::spawn(tray::open_received(tray.shared.clone()));
                 }),
@@ -214,7 +230,6 @@ impl ksni::Tray for Tray {
         items.push(
             StandardItem {
                 label: "Refresh".into(),
-                icon_name: "view-refresh-symbolic".into(),
                 activate: Box::new(|tray: &mut Self| tray.shared.announce()),
                 ..Default::default()
             }

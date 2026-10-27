@@ -83,6 +83,15 @@ impl Notifier {
     }
 }
 
+/// The drop of [`crate::icon`] as an `image-data` hint, so notifications
+/// show the same icon whatever the icon theme.
+fn drop_image() -> Value<'static> {
+    const SIZE: i32 = 64;
+    let rgba = crate::icon::drop_rgba(SIZE as u32, false);
+    // width, height, row stride, alpha, bits per sample, channels, pixels
+    Value::from((SIZE, SIZE, SIZE * 4, true, 8, 4, rgba))
+}
+
 impl NotificationsProxy<'_> {
     /// Persistent notification with Accept / Decline (/ Always) buttons.
     pub async fn ask(&self, summary: &str, body: &str, offer_always: bool) -> zbus::Result<u32> {
@@ -90,11 +99,11 @@ impl NotificationsProxy<'_> {
         if offer_always {
             actions.extend([ALWAYS, "Always accept from this device"]);
         }
-        let hints = HashMap::from([("urgency", Value::U8(2))]);
+        let hints = HashMap::from([("urgency", Value::U8(2)), ("image-data", drop_image())]);
         self.notify(
             "tuxDrop",
             0,
-            "document-send",
+            "",
             summary,
             &escape(body),
             &actions,
@@ -120,7 +129,7 @@ impl NotificationsProxy<'_> {
         actions: &[&str],
         percent: Option<u32>,
     ) -> u32 {
-        let mut hints = HashMap::new();
+        let mut hints = HashMap::from([("image-data", drop_image())]);
         if let Some(percent) = percent {
             hints.insert("value", Value::I32(percent.min(100) as i32));
             hints.insert("suppress-sound", Value::Bool(true));
@@ -128,7 +137,7 @@ impl NotificationsProxy<'_> {
         self.notify(
             "tuxDrop",
             replaces,
-            "document-send",
+            "",
             summary,
             &escape(body),
             actions,

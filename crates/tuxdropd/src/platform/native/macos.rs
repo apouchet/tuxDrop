@@ -340,10 +340,9 @@ impl FileManager {
         open(&[folder.as_os_str()], false).await;
     }
 
-    /// Opens the folders holding `items`, with the items selected.
-    pub async fn select(&self, items: &[impl AsRef<Path>]) {
-        let items: Vec<_> = items.iter().map(|p| p.as_ref().as_os_str()).collect();
-        open(&items, true).await;
+    /// Opens the folder holding `item`, with it selected.
+    pub async fn select(&self, item: &Path) {
+        open(&[item.as_os_str()], true).await;
     }
 }
 

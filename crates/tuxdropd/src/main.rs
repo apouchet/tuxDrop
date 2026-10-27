@@ -7,6 +7,7 @@
 #![cfg_attr(all(windows, not(test)), windows_subsystem = "windows")]
 
 mod api;
+mod icon;
 mod notifications;
 mod platform;
 mod tray;
@@ -69,8 +70,9 @@ impl Transfer {
 
 /// What the button of a notification that outlives its transfer does.
 enum Followup {
-    /// Shows these received items in the file manager.
-    Select(Vec<PathBuf>),
+    /// Shows this received item in the file manager. A single one: some file
+    /// managers (Nautilus) open a window per item asked for.
+    Select(PathBuf),
     /// Copies a received message.
     Copy(String),
 }
@@ -266,7 +268,7 @@ impl Shared {
         }
         let followup = self.followups.lock().unwrap().remove(&notification);
         match followup {
-            Some(Followup::Select(items)) => self.file_manager.select(&items).await,
+            Some(Followup::Select(item)) => self.file_manager.select(&item).await,
             Some(Followup::Copy(text)) => {
                 if let Err(e) = platform::copy_to_clipboard(&text).await {
                     tracing::warn!("cannot copy the message: {e:#}");
@@ -572,15 +574,14 @@ async fn handle(shared: &Arc<Shared>, event: ReceiveEvent) {
             let download_dir = &shared.node.config.download_dir;
             let (summary, body, signal, followup) = match &outcome {
                 Outcome::Completed => {
-                    let items = transfer
+                    let first = transfer
                         .as_ref()
-                        .map(|t| top_level(download_dir, &t.saved))
-                        .unwrap_or_default();
+                        .and_then(|t| top_level(download_dir, &t.saved).into_iter().next());
                     (
                         "Files received",
                         format!("Saved in {}", download_dir.display()),
                         "completed".to_owned(),
-                        (!items.is_empty()).then_some(Followup::Select(items)),
+                        first.map(Followup::Select),
                     )
                 }
                 Outcome::Cancelled => {
